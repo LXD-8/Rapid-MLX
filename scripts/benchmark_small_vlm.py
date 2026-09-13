@@ -18,7 +18,6 @@ import argparse
 import base64
 import io
 import json
-import re
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -147,8 +146,6 @@ def render_fixture(task_id: str) -> bytes:
 
 def parse_json_object(text: str) -> dict[str, Any] | None:
     cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.I)
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError:

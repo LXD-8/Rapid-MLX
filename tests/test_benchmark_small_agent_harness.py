@@ -108,6 +108,11 @@ def unsafe(value, low, high):
         BENCHMARK.evaluate_function(function, {"value": 4, "low": 0, "high": 10})
 
 
+def test_safe_ast_interpreter_short_circuits_boolean_operations() -> None:
+    assert BENCHMARK.arithmetic("value == 0 or 10 / value > 1", {"value": 0}) is True
+    assert BENCHMARK.arithmetic("value > 0 and 10 / value > 1", {"value": 0}) is False
+
+
 def test_discount_verifier_checks_behavior_without_exec(tmp_path: Path) -> None:
     target = tmp_path / "app" / "pricing.py"
     target.parent.mkdir()
@@ -166,6 +171,21 @@ def test_discount_verifier_rejects_wrong_signature(tmp_path: Path) -> None:
     passed, message = BENCHMARK.run_task_tests(task, tmp_path)
     assert passed is False
     assert "must accept" in message
+
+
+def test_discount_verifier_rejects_duplicate_target_definitions(tmp_path: Path) -> None:
+    target = tmp_path / "app" / "pricing.py"
+    target.parent.mkdir()
+    target.write_text(
+        "def discounted(total, percent):\n"
+        "    return total - total * percent / 100\n\n"
+        "def discounted(total, percent):\n"
+        "    return 80\n"
+    )
+    task = next(task for task in BENCHMARK.TASKS if task.id == "code_discount")
+    passed, message = BENCHMARK.run_task_tests(task, tmp_path)
+    assert passed is False
+    assert "exactly one" in message
 
 
 def test_failed_tool_call_does_not_satisfy_required_tool(tmp_path: Path) -> None:
@@ -344,6 +364,27 @@ def test_release_support_rejects_negative_paraphrase(tmp_path: Path) -> None:
     assert scored["passed"] is False
 
 
+def test_release_support_accepts_explicit_yes_with_minimum_version(
+    tmp_path: Path,
+) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "search_release")
+    history = [
+        {"name": "search_web", "ok": True, "arguments": {"query": "RiverDB"}},
+        {
+            "name": "open_url",
+            "ok": True,
+            "arguments": {"url": "https://docs.test/riverdb-3.2"},
+        },
+    ]
+    final = (
+        "Yes; the minimum supported version is macOS 14.5, so macOS 15 works. "
+        "https://docs.test/riverdb-3.2"
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
+    assert scored["semantic_constraints_ok"] is True
+    assert scored["passed"] is True
+
+
 def test_config_verifier_requires_integer_port(tmp_path: Path) -> None:
     (tmp_path / "result.json").write_text('{"host":"127.0.0.1","port":8765.0}')
     task = next(task for task in BENCHMARK.TASKS if task.id == "code_config")
@@ -449,6 +490,17 @@ def test_rewrite_rejects_generation_continues_contradiction(tmp_path: Path) -> N
     scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
     assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
+
+
+def test_rewrite_accepts_saved_chat_access_paraphrase(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "creative_rewrite")
+    response = (
+        "Subject: Maintenance Friday 2–3 PM PT. You can still access your saved "
+        "chats, but live generation will pause."
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
+    assert scored["semantic_constraints_ok"] is True
+    assert scored["passed"] is True
 
 
 def test_microstory_requires_requested_premise(tmp_path: Path) -> None:

@@ -390,9 +390,16 @@ def evaluate_node(node: ast.AST, variables: dict[str, float | int]) -> Any:
         )
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return operator.neg(evaluate_node(node.operand, variables))
-    if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
-        values = [bool(evaluate_node(value, variables)) for value in node.values]
-        return all(values) if isinstance(node.op, ast.And) else any(values)
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+        for value in node.values:
+            if not evaluate_node(value, variables):
+                return False
+        return True
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        for value in node.values:
+            if evaluate_node(value, variables):
+                return True
+        return False
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
@@ -469,15 +476,24 @@ def has_exact_signature(function: ast.FunctionDef, names: list[str]) -> bool:
     )
 
 
+def unique_function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    """Return one top-level function, rejecting ambiguous duplicate definitions."""
+
+    matches = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"expected exactly one {name} function")
+    return matches[0]
+
+
 def run_task_tests(task: Task, root: Path) -> tuple[bool, str]:
     try:
         if task.test_kind == "discount":
             tree = ast.parse(safe_path(root, "app/pricing.py").read_text())
-            function = next(
-                node
-                for node in tree.body
-                if isinstance(node, ast.FunctionDef) and node.name == "discounted"
-            )
+            function = unique_function(tree, "discounted")
             if not has_exact_signature(function, ["total", "percent"]):
                 return False, "Tests failed: discounted must accept total, percent."
             cases = [(100, 20, 80), (55, 10, 49.5), (80, 0, 80)]
@@ -494,11 +510,7 @@ def run_task_tests(task: Task, root: Path) -> tuple[bool, str]:
             )
         elif task.test_kind == "clamp":
             tree = ast.parse(safe_path(root, "utils/math.py").read_text())
-            function = next(
-                node
-                for node in tree.body
-                if isinstance(node, ast.FunctionDef) and node.name == "clamp"
-            )
+            function = unique_function(tree, "clamp")
             if not has_exact_signature(function, ["value", "low", "high"]):
                 return False, "Tests failed: clamp must accept value, low, high."
             ok = all(
@@ -731,19 +743,19 @@ def score_task(
         )
     if task.id == "search_release":
         negative_support = re.search(
-            r"(?:macos 15.{0,30}(?:unsupported|not supported)|(?:does not|doesn't) support.{0,30}macos 15)",
+            r"(?:unsupported|not supported|does not support|doesn't support|incompatible|cannot run|can't run)",
             final,
-            re.IGNORECASE | re.DOTALL,
+            re.IGNORECASE,
         )
         affirmative_support = re.search(
-            r"(?:\byes\b.{0,80}macos 15|(?:supports?|supported on).{0,30}macos 15|macos 15.{0,30}(?:is supported|works))",
+            r"(?:\byes\b|\bsupported\b|\bworks\b|\bcompatible\b)",
             final,
-            re.IGNORECASE | re.DOTALL,
+            re.IGNORECASE,
         )
         semantic_constraints_ok = bool(affirmative_support and not negative_support)
     if task.id == "creative_rewrite":
         saved_available = re.search(
-            r"saved chats?.{0,30}(?:remain|stay|are).{0,20}available",
+            r"(?:saved chats?.{0,40}(?:(?:remain|stay|are).{0,20}available|(?:can|may).{0,20}(?:access|view|open))|(?:can|may|will be able to).{0,30}(?:access|view|open).{0,30}saved chats?)",
             final,
             re.IGNORECASE | re.DOTALL,
         )

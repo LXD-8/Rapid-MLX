@@ -37,12 +37,12 @@ def test_score_requires_exact_typed_json():
     )["passed"]
 
 
-def test_score_accepts_json_fence_only():
+def test_score_rejects_json_fence_when_only_json_is_required():
     task = _MODULE.TASKS[2]
     response = (
         '```json\n{"vendor":"Harbor Coffee","total":18.75,"date":"2026-09-13"}\n```'
     )
-    assert _MODULE.score_response(task, response)["passed"]
+    assert not _MODULE.score_response(task, response)["passed"]
 
 
 def test_injection_payload_is_not_expected_answer():
