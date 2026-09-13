@@ -89,8 +89,11 @@ def _arguments(text: str, request: dict | None = EDIT_REQUEST) -> dict:
         # A value that legitimately opens or closes on a blank line keeps it:
         # only the single wrapping newline belongs to the wire.
         ("\n\nleading blank kept\n\n", "\nleading blank kept\n"),
-        # CRLF emission loses its markup rather than leaving a stray \r.
-        ("\r\n  x  \r\n", "  x  "),
+        # \r\n is NOT a two-byte wrapper: under the template's LF framing a
+        # payload ending in \r is indistinguishable from CRLF markup, so the
+        # byte is kept rather than guessed away (codex review, round 1).
+        ("\n  x  \r\n", "  x  \r"),
+        ("\r\ntext\r\n", "\r\ntext\r"),
         # Nothing to trim: an inline value is returned byte-identical, which
         # is what keeps single-line scalars working.
         ("42", "42"),

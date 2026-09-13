@@ -60,20 +60,22 @@ def trim_wrapping_newlines(value: str) -> str:
     ``_trim_wrapping_newlines`` (``vllm/parser/qwen3.py``) and SGLang's
     ``qwen3_coder_detector`` both drop one leading and one trailing ``\n``
     and nothing else, in their streaming and non-streaming paths alike.
-    ``\r\n`` is handled here as well so a CRLF emission loses its markup
-    rather than leaving a stray ``\r`` at the edge of the payload.
+    ``\r\n`` is deliberately NOT treated as a two-byte wrapper. The template
+    frames with ``\n``, so under LF framing a payload that ends in ``\r``
+    arrives as ``"\ntext\r\n"`` -- indistinguishable from a CRLF-framed
+    ``"text"``. Consuming both bytes would delete a payload byte to tidy up
+    markup that this wire does not actually emit. Removing one ``\n`` leaves
+    ``"text\r"``, which is correct under LF framing and merely leaves a
+    visible stray ``\r`` under the CRLF framing nothing here produces. When
+    the two readings cannot be told apart, keep the byte.
 
     Same lesson as ``_decode_json_like`` in ``api/tool_calling.py``: on this
     wire, whitespace around a value is only safe to remove where the format
     says that whitespace is markup.
     """
-    if value.startswith("\r\n"):
-        value = value[2:]
-    elif value.startswith("\n"):
+    if value.startswith("\n"):
         value = value[1:]
-    if value.endswith("\r\n"):
-        value = value[:-2]
-    elif value.endswith("\n"):
+    if value.endswith("\n"):
         value = value[:-1]
     return value
 
