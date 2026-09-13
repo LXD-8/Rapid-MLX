@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import inspect
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -74,6 +75,9 @@ def test_admission_is_single_token_bf16_and_complete_cache_only():
     assert not fused._eligible(layer, decode, mx.ones((1, 1)), cache)
     cache.lengths = mx.array([1])
     assert not fused._eligible(layer, decode, None, cache)
+    cache.lengths = None
+    cache.left_padding = mx.array([0])
+    assert not fused._eligible(layer, decode, None, cache)
 
     class BrokenInput:
         @property
@@ -102,6 +106,64 @@ def test_structural_gate_rejects_unknown_geometry(field, value):
 
 def test_structural_gate_fails_closed_on_unknown_object():
     assert not fused._structurally_eligible(object())
+
+
+def test_structural_gate_and_admission_accept_split_vlm_projections():
+    layer = _layer()
+    delattr(layer, "in_proj_fused")
+    for name, rows in {
+        "in_proj_qkv": fused._CONV_DIM,
+        "in_proj_z": fused._VALUE_DIM,
+        "in_proj_b": fused._NUM_VALUE_HEADS,
+        "in_proj_a": fused._NUM_VALUE_HEADS,
+    }.items():
+        setattr(layer, name, nn.Linear(1, rows, bias=False))
+    assert fused._structurally_eligible(layer)
+    assert fused._eligible(
+        layer,
+        mx.zeros((1, 1, 2048), dtype=mx.bfloat16),
+        None,
+        _Cache(),
+    )
+
+
+def test_split_projection_path_preserves_declared_order():
+    layer = SimpleNamespace(
+        in_proj_qkv=lambda inputs: ("qkv", inputs),
+        in_proj_z=lambda inputs: ("z", inputs),
+        in_proj_b=lambda inputs: ("b", inputs),
+        in_proj_a=lambda inputs: ("a", inputs),
+    )
+    inputs = object()
+    assert fused._project_inputs(layer, inputs) == (
+        ("qkv", inputs),
+        ("z", inputs),
+        ("b", inputs),
+        ("a", inputs),
+    )
+
+
+def test_split_projection_gate_rejects_wrong_output_geometry():
+    layer = _layer()
+    delattr(layer, "in_proj_fused")
+    layer.in_proj_qkv = nn.Linear(1, fused._CONV_DIM - 1, bias=False)
+    layer.in_proj_z = nn.Linear(1, fused._VALUE_DIM, bias=False)
+    layer.in_proj_b = nn.Linear(1, fused._NUM_VALUE_HEADS, bias=False)
+    layer.in_proj_a = nn.Linear(1, fused._NUM_VALUE_HEADS, bias=False)
+    assert not fused._structurally_eligible(layer)
+
+
+def test_projected_admission_requires_exact_shape_and_dtype():
+    layer = _layer()
+    cache = _Cache()
+    qkv = mx.zeros((1, 1, fused._CONV_DIM), dtype=mx.bfloat16)
+    z = mx.zeros((1, 1, fused._VALUE_DIM), dtype=mx.bfloat16)
+    gates = mx.zeros((1, 1, fused._NUM_VALUE_HEADS), dtype=mx.bfloat16)
+    assert fused._projected_eligible(layer, qkv, z, gates, gates, cache)
+    assert not fused._projected_eligible(
+        layer, qkv.astype(mx.float16), z, gates, gates, cache
+    )
+    assert not fused._projected_eligible(layer, qkv[..., :-1], z, gates, gates, cache)
 
 
 def test_install_honors_kill_switch(monkeypatch):
@@ -165,6 +227,31 @@ def test_install_tags_only_exact_qwen35_layers(monkeypatch):
     assert fused.install_qwen35_fused_gdn_decode(model) == 1
     assert getattr(layer, fused._TAG)
     assert layer._rapid_qwen35_fused_gdn_threadgroup_y == 16
+
+
+def test_install_discovers_already_loaded_vlm_family_without_import(monkeypatch):
+    class FakeVlmGdn(nn.Module):
+        pass
+
+    layer = FakeVlmGdn()
+    for name, value in vars(_layer()).items():
+        if name in {"training", fused._TAG, "in_proj_fused"}:
+            continue
+        setattr(layer, name, value)
+    layer.in_proj_qkv = nn.Linear(1, fused._CONV_DIM, bias=False)
+    layer.in_proj_z = nn.Linear(1, fused._VALUE_DIM, bias=False)
+    layer.in_proj_b = nn.Linear(1, fused._NUM_VALUE_HEADS, bias=False)
+    layer.in_proj_a = nn.Linear(1, fused._NUM_VALUE_HEADS, bias=False)
+    layer.eval()
+    language = ModuleType("mlx_vlm.models.qwen3_5.language")
+    language.Qwen3_5GatedDeltaNet = FakeVlmGdn
+    monkeypatch.setitem(sys.modules, language.__name__, language)
+    monkeypatch.setattr(fused, "probe_qwen35_fused_gdn_decode", lambda: 32)
+    monkeypatch.setattr(fused, "_patch_class", lambda _class: None)
+    model = SimpleNamespace(named_modules=lambda: iter((("gdn", layer),)))
+
+    assert fused.install_qwen35_fused_gdn_decode(model) == 1
+    assert getattr(layer, fused._TAG)
 
 
 def test_shared_kernel_keeps_qwen4_and_qwen35_compile_time_paths():
@@ -326,3 +413,11 @@ def test_engine_installs_gdn_decode_only_after_projection_fusion():
     projection = source.index("fuse_gdn_in_proj")
     decode = source.index("install_qwen35_fused_gdn_decode")
     assert projection < decode
+
+
+def test_mllm_loader_installs_qwen35_fused_gdn_decode():
+    from vllm_mlx.models.mllm import MLXMultimodalLM
+
+    source = inspect.getsource(MLXMultimodalLM.load)
+    assert source.count("install_qwen35_moe_router") == 2
+    assert source.count("install_qwen35_fused_gdn_decode") == 2
