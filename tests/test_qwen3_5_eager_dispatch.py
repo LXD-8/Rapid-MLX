@@ -133,3 +133,28 @@ def test_install_is_idempotent_and_uninstall_restores_original(isolated_patch):
 
     eager.uninstall_qwen3_5_eager_dispatch()
     assert q.DecoderLayer.__call__ is original
+
+
+def test_install_adopts_existing_process_hook(isolated_patch):
+    q, _layer_type = isolated_patch
+    installed = q.DecoderLayer.__call__
+    eager.uninstall_qwen3_5_eager_dispatch()
+    q.DecoderLayer.__call__ = installed
+    q._RAPID_MLX_EAGER_LAYER_DISPATCH_INSTALLED = True
+
+    eager.install_qwen3_5_eager_dispatch()
+
+    assert eager.is_installed()
+    assert q.DecoderLayer.__call__ is installed
+
+
+def test_install_fails_open_when_decoder_layer_is_unavailable(
+    isolated_patch, monkeypatch
+):
+    q, _layer_type = isolated_patch
+    eager.uninstall_qwen3_5_eager_dispatch()
+    monkeypatch.delattr(q, "DecoderLayer")
+
+    eager.install_qwen3_5_eager_dispatch()
+
+    assert not eager.is_installed()
