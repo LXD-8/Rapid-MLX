@@ -878,7 +878,7 @@ class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
     cache semantics, but their cache container classes take materially
     different singleton decode paths. This wrapper changes only cache
     construction; forward calls still use the already-loaded vision language
-    module and therefore the exact same weights and numerics.
+    module and therefore the exact same weights and model operations.
     """
 
     def __init__(self, model):
@@ -892,8 +892,9 @@ class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
         # share these lane-local values. Both calls execute on the same
         # single-thread executor, so swapping them around the complete forward
         # is atomic with respect to model execution.
-        previous_position_ids = getattr(self._model, "_position_ids", None)
-        previous_rope_deltas = getattr(self._model, "_rope_deltas", None)
+        missing = object()
+        previous_position_ids = getattr(self._model, "_position_ids", missing)
+        previous_rope_deltas = getattr(self._model, "_rope_deltas", missing)
         self._model._position_ids = self._native_position_ids
         self._model._rope_deltas = self._native_rope_deltas
         try:
@@ -901,8 +902,14 @@ class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
         finally:
             self._native_position_ids = getattr(self._model, "_position_ids", None)
             self._native_rope_deltas = getattr(self._model, "_rope_deltas", None)
-            self._model._position_ids = previous_position_ids
-            self._model._rope_deltas = previous_rope_deltas
+            if previous_position_ids is missing:
+                del self._model._position_ids
+            else:
+                self._model._position_ids = previous_position_ids
+            if previous_rope_deltas is missing:
+                del self._model._rope_deltas
+            else:
+                self._model._rope_deltas = previous_rope_deltas
 
     def make_cache(self):
         from mlx_lm.models.cache import ArraysCache, KVCache
@@ -947,9 +954,11 @@ def _should_start_qwen36_native_text_cache(
     config_model_type: str | None,
     arrays_cache_compat: bool,
     spec_decode: str,
+    no_hybrid: bool = False,
 ) -> bool:
     return bool(
         arrays_cache_compat
+        and not no_hybrid
         and config_model_type == "qwen3_5_moe"
         and spec_decode == "none"
         and _supports_qwen36_native_text_cache(language_model)
@@ -1888,6 +1897,7 @@ class BatchedEngine(BaseEngine):
             config_model_type=config_model_type,
             arrays_cache_compat=arrays_cache_compat,
             spec_decode=spec_decode,
+            no_hybrid=self._no_hybrid,
         ):
             await self._start_qwen36_native_text_engine(language_model)
 

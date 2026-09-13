@@ -80,6 +80,8 @@ def test_wrapper_changes_only_cache_construction():
     assert isinstance(caches[1], KVCache)
     assert wrapper.layers is model.layers
     assert wrapper("same-array") == "same-array"
+    assert not hasattr(model, "_position_ids")
+    assert not hasattr(model, "_rope_deltas")
 
 
 def test_wrapper_isolates_lane_local_mrope_state():
@@ -180,6 +182,9 @@ def test_start_gate_rejects_spec_decode_and_honors_kill_switch(monkeypatch):
             model, **{**kwargs, "spec_decode": "mtp"}
         )
         is False
+    )
+    assert (
+        _should_start_qwen36_native_text_cache(model, **kwargs, no_hybrid=True) is False
     )
     monkeypatch.setenv("RAPID_MLX_QWEN36_NATIVE_TEXT_CACHE", "0")
     assert _should_start_qwen36_native_text_cache(model, **kwargs) is False
