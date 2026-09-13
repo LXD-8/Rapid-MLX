@@ -147,3 +147,30 @@ This qualifies the sampled copy route for the Qwen3.5/3.8 family on the
 measured artifact pair, and the prompt-history fix for every family already on
 the route. It does not qualify other families for sampled copying, or change
 any family's greedy behaviour, or touch continuous multi-request speculation.
+
+## Real desktop app (Qwen3.5-4B, temperature 1.0)
+
+Rapid-MLX Desktop 0.14.1 on an M2 Pro 32 GB, pointed at this branch through
+`RAPID_BIN` (the bundled sidecar runtime with `vllm_mlx/` replaced by the
+branch tree). The app's own defaults were left alone: temperature 1.0,
+top_p 0.95, max_tokens 4096. `qwen3.5-4b-4bit` ships MTP default-off
+(#3115), so MTP was opted in the way a user does it, through the
+Performance panel's persisted per-model preset; the sidecar then launched
+with `--speculative-config {"method":"mtp",...}`. The 27B alias was refused
+by the app's memory guard on 32 GB, so the 4B stands in for the family.
+Counters are `GET /v1/status` → `mtp_prompt_lookup`, read after each turn.
+
+| turn (same chat) | completion tok | proposals | drafted | accepted | accept | server gen tok/s |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 add type hints + docstring | 950 | 11 | 48 | 34 | 71% | 18.9 |
+| 2 rename `merged` → `combined` | 949 | 39 | 1032 | 783 | 76% | 61.9 |
+| 3 fix two bugs, return full code | 3022 | 102 | 2027 | 1432 | 71% | 31.7 |
+
+Every turn was a prompt-cache miss (hybrid family, 4266-token prompt by
+turn 3), so the copy index came from the full prompt rather than the
+uncached tail; `prompt_lookup_cache_fallthroughs` stayed 0. Five steps
+fell through on `ft_batch_size` while the app's title request shared the
+batch, which is the documented batch>1 boundary, not a regression. Turn 1
+has almost nothing to copy and shows the 4B MTP floor from #3115; turns 2
+and 3 are what a GUI user editing code now gets, at the app's default
+sampling temperature.
