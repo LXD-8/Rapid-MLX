@@ -43,22 +43,35 @@ def test_main_fails_when_a_request_has_an_infrastructure_error(
         id="infra",
         category="test",
         prompt="test",
-        tools=[],
+        tools=["search_web"],
     )
     monkeypatch.setattr(BENCHMARK, "TASKS", [task])
+    def unavailable(*_args, **_kwargs):
+        raise ConnectionError("unavailable")
+
+    monkeypatch.setattr(BENCHMARK, "completion", unavailable)
     monkeypatch.setattr(
-        BENCHMARK,
-        "run_one",
-        lambda *_args: {
-            "task": "infra",
-            "category": "test",
-            "score": 0.0,
-            "passed": False,
-            "rounds": 0,
-            "elapsed_s": 0.0,
-            "error": "ConnectionError: unavailable",
-        },
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--model",
+            "test-model",
+            "--mode",
+            "enhanced",
+            "--seeds",
+            "11",
+            "--output",
+            str(tmp_path / "result.json"),
+        ],
     )
+
+    assert BENCHMARK.main() == 1
+
+
+def test_main_rejects_nonpositive_max_rounds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
@@ -68,14 +81,16 @@ def test_main_fails_when_a_request_has_an_infrastructure_error(
             "test-model",
             "--mode",
             "raw",
-            "--seeds",
-            "11",
+            "--max-rounds",
+            "0",
             "--output",
             str(tmp_path / "result.json"),
         ],
     )
 
-    assert BENCHMARK.main() == 1
+    with pytest.raises(SystemExit) as raised:
+        BENCHMARK.main()
+    assert raised.value.code == 2
 
 
 def test_safe_ast_interpreter_handles_branching_clamp() -> None:
@@ -426,6 +441,41 @@ def test_incident_requires_reading_each_evidence_file(tmp_path: Path) -> None:
     assert scored["passed"] is False
 
 
+def test_incident_rejects_contradictory_cause_and_action(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "organize_incident")
+    (tmp_path / "incident.md").write_text(
+        "The $10,000 revenue loss came from refunds, despite a payment error "
+        "rate of 22% after payment-sdk 4.8.0. Do not rollback 4.8.0."
+    )
+    history = [
+        {"name": "read_file", "ok": True, "arguments": {"path": path}}
+        for path in task.required_reads
+    ] + [
+        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
+    ]
+    scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
+
+
+def test_incident_accepts_causal_evidence_and_corrective_action(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "organize_incident")
+    (tmp_path / "incident.md").write_text(
+        "Revenue loss was $10,000. The likely cause was the payment checkout "
+        "error spike to 22%, introduced after payment-sdk 4.8.0. Corrective "
+        "action: rollback 4.8.0."
+    )
+    history = [
+        {"name": "read_file", "ok": True, "arguments": {"path": path}}
+        for path in task.required_reads
+    ] + [
+        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
+    ]
+    scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
+    assert scored["semantic_constraints_ok"] is True
+    assert scored["passed"] is True
+
+
 def test_required_read_accepts_normalized_equivalent_path(tmp_path: Path) -> None:
     target = tmp_path / "app" / "pricing.py"
     target.parent.mkdir()
@@ -509,3 +559,25 @@ def test_microstory_requires_requested_premise(tmp_path: Path) -> None:
     scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
     assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
+
+
+def test_microstory_rejects_old_book_with_new_mac_mini(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "creative_microstory")
+    response = (
+        "At night, a new Mac mini became a librarian and cataloged an old book. "
+        "The little machine kept the last light on."
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
+
+
+def test_microstory_accepts_age_on_machine_coreference(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "creative_microstory")
+    response = (
+        "At night, the Mac mini hummed beside the library. The machine, dusty "
+        "and forgotten, cataloged stories. The little machine kept the last light on."
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
+    assert scored["semantic_constraints_ok"] is True
+    assert scored["passed"] is True

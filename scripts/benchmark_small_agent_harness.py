@@ -638,15 +638,15 @@ def make_plan(
         },
         {"role": "user", "content": task.prompt},
     ]
+    data = completion(
+        base_url, model, messages, tools=None, seed=seed, response_format=schema
+    )
     try:
-        data = completion(
-            base_url, model, messages, tools=None, seed=seed, response_format=schema
-        )
         content = data["choices"][0]["message"].get("content") or ""
         parsed = json.loads(content)
         steps = [str(step) for step in parsed["steps"]]
         return steps, bool(steps)
-    except Exception:
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError):
         return ["Complete the user's request and verify the result."], False
 
 
@@ -733,6 +733,38 @@ def score_task(
         artifact_effect_ok = bool(artifact_text.strip()) and all(
             needle.lower() in artifact_text.lower() for needle in task.required
         )
+        loss_is_quantified = re.search(
+            r"(?:lost|loss|drop|decrease|impact).{0,40}\$10,000|\$10,000.{0,40}(?:lost|loss|drop|decrease|impact)",
+            artifact_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        payment_spike_is_causal = re.search(
+            r"(?:payment|checkout).{0,80}(?:error|failure).{0,40}22%|22%.{0,40}(?:payment|checkout).{0,80}(?:error|failure)",
+            artifact_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        deployment_is_connected = re.search(
+            r"(?:4\.8\.0.{0,80}(?:cause|trigger|introduc|after|coincid|likely|payment|error)|(?:cause|trigger|introduc|after|coincid|likely|payment|error).{0,80}4\.8\.0)",
+            artifact_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        rollback_is_action = re.search(
+            r"\b(?:roll\s*back|rollback|revert)\b",
+            artifact_text,
+            re.IGNORECASE,
+        )
+        rollback_is_negated = re.search(
+            r"(?:do not|don't|avoid|no)\s+(?:a\s+)?rollback",
+            artifact_text,
+            re.IGNORECASE,
+        )
+        semantic_constraints_ok = bool(
+            loss_is_quantified
+            and payment_spike_is_causal
+            and deployment_is_connected
+            and rollback_is_action
+            and not rollback_is_negated
+        )
     if task.id == "search_battery":
         semantic_constraints_ok = bool(
             re.search(
@@ -766,16 +798,20 @@ def score_task(
         )
         semantic_constraints_ok = bool(saved_available and generation_pauses)
     if task.id == "creative_microstory":
+        age = r"(?:old|ancient|aging|dusty|forgotten|discarded|obsolete|cracked-screen|19\d\d|20[01]\d)"
+        old_mac_mini = re.search(
+            rf"(?:\b{age}\b(?:[-\s]+\w+){{0,2}}\s+mac mini\b|\bmac mini\b(?:\s*,?\s*(?:was|is|grew|had become|became))?\s+(?:an?\s+)?\b{age}\b|\bmac mini\b.{{0,240}}\b(?:the\s+)?(?:machine|computer|it)\b\s*,?\s*\b{age}\b)",
+            final,
+            re.IGNORECASE | re.DOTALL,
+        )
         premise_present = all(
             re.search(pattern, final, re.IGNORECASE)
             for pattern in (
-                r"\bmac mini\b",
-                r"\b(?:old|ancient|aging|dusty|forgotten|19\d\d|20[01]\d)\b",
                 r"\b(?:night|nights|midnight|dark|dusk)\b|\d+\s*a\.?m\.?",
                 r"\b(?:librarian|books?|library|catalog|archive|titles?|stories)\b",
             )
         )
-        semantic_constraints_ok = bool(premise_present)
+        semantic_constraints_ok = bool(old_mac_mini and premise_present)
     components = required_hits + tool_hits + tool_group_hits + required_read_hits
     passing_test_after_mutation: bool | None = None
     if task.test_kind:
@@ -876,8 +912,12 @@ def run_one(
         state: dict[str, Any] = {}
         plan: list[str] = []
         plan_valid = True
-        if mode == "enhanced" and task.tools:
-            plan, plan_valid = make_plan(base_url, model, task, seed)
+        error = ""
+        try:
+            if mode == "enhanced" and task.tools:
+                plan, plan_valid = make_plan(base_url, model, task, seed)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
         system = ENHANCED_SYSTEM if mode == "enhanced" else RAW_SYSTEM
         if plan:
             system += "\nHarness task ledger:\n" + "\n".join(
@@ -890,10 +930,9 @@ def run_one(
         exposed = task.tools if mode == "enhanced" else list(TOOLS)
         history: list[dict[str, Any]] = []
         final = ""
-        error = ""
         rounds = 0
         try:
-            for rounds in range(1, max_rounds + 1):
+            for rounds in range(1, max_rounds + 1) if not error else ():
                 response = completion(
                     base_url,
                     model,
@@ -990,6 +1029,8 @@ def main() -> int:
     parser.add_argument("--tasks", help="Comma-separated task ids; default is all")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.max_rounds < 1:
+        parser.error("--max-rounds must be at least 1")
     seeds = [int(value) for value in args.seeds.split(",")]
     selected = TASKS
     if args.tasks:
