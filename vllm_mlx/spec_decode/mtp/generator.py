@@ -99,15 +99,19 @@ def _effective_prompt_lookup_policy(model) -> PromptLookupPolicy:
         # the sampled route (see ``PromptLookupPolicy.admits_temperature``),
         # and dropping it here would silently hold every temperature > 0
         # request on the greedy-only path no matter what the family declared
-        # -- including the whole served path, since ``scheduler.py`` reads
-        # its policy from this function. The env override exists for the same
-        # reason the enable flag has one: an operator bisecting a regression
-        # needs to put one request class back on the old route without
-        # turning copying off for the greedy requests too.
-        enabled_under_sampling=_env_flag(
-            "RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED",
-            policy.enabled_under_sampling,
-        ),
+        # -- including the whole served path, since ``scheduler.py`` reads its
+        # policy from this function.
+        #
+        # The knob is deliberately DISABLE-ONLY, unlike
+        # ``RAPID_MLX_MTP_PROMPT_LOOKUP``: an operator bisecting a report that
+        # only sampled chats look wrong needs to put that one request class
+        # back on the old route without taking greedy down with it, and that
+        # is the whole intended use. Force-enabling would be the opposite --
+        # it would put a family that never measured its rollback contract
+        # under sampling onto the route by environment variable, which is
+        # exactly what making this per-family was for.
+        enabled_under_sampling=policy.enabled_under_sampling
+        and _env_flag("RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED", True),
         min_ngram=min_ngram,
         max_ngram=max(
             min_ngram,

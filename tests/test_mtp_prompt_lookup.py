@@ -110,3 +110,52 @@ def test_prompt_lookup_policy_withholds_sampling_until_a_family_qualifies() -> N
     assert greedy_only.admits_temperature(1e-6) is False
     assert qualified.admits_temperature(0.7) is True
     assert qualified.admits_temperature(0.0) is True
+
+
+def test_prompt_lookup_policy_fields_are_keyword_only() -> None:
+    """Field order is not API: a qualification flag must not be positional.
+
+    Both gates on this policy are booleans sitting next to sizing integers.
+    Adding ``enabled_under_sampling`` beside the flag it belongs with silently
+    reinterpreted any positional construction -- ``PromptLookupPolicy(True, 8,
+    10, 24)`` would have passed ``8`` as the sampled qualification. Keyword-only
+    makes that a TypeError instead of a family being enabled by accident.
+    """
+    with pytest.raises(TypeError):
+        PromptLookupPolicy(True, 8, 10, 24)  # type: ignore[misc]
+
+
+def test_sampled_prompt_lookup_override_cannot_enable_an_unqualified_family(
+    monkeypatch,
+) -> None:
+    """The sampled knob is disable-only, unlike the copy opt-in itself.
+
+    ``RAPID_MLX_MTP_PROMPT_LOOKUP`` may turn copying ON for a family that has
+    the capability but not the default, because greedy copying is qualified
+    engine-wide. The sampled route is not: what a family has to measure there
+    is which rows its caches can roll back when a refused proposal is trimmed.
+    An env var that could force that on would undo the reason the flag is
+    per-family, so ``=1`` on an unqualified family must stay off while ``=0``
+    still takes a qualified one off the route.
+    """
+    from vllm_mlx.spec_decode.mtp.generator import _effective_prompt_lookup_policy
+
+    class _Model:
+        mtp_prompt_lookup_supported = True
+
+        def __init__(self, policy):
+            self.mtp_prompt_lookup_policy = policy
+
+    unqualified = _Model(PromptLookupPolicy(enabled_by_default=True))
+    qualified = _Model(
+        PromptLookupPolicy(enabled_by_default=True, enabled_under_sampling=True)
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED", "1")
+    assert _effective_prompt_lookup_policy(unqualified).admits_temperature(0.7) is False
+    assert _effective_prompt_lookup_policy(qualified).admits_temperature(0.7) is True
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED", "0")
+    assert _effective_prompt_lookup_policy(qualified).admits_temperature(0.7) is False
+    # Greedy is untouched either way: this knob is about one request class.
+    assert _effective_prompt_lookup_policy(qualified).admits_temperature(0.0) is True

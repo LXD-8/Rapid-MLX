@@ -41,7 +41,10 @@ Two independent gates had to fall:
 The arms are the operator knob, not a source edit. `RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED=0`
 reproduces shipped behaviour for a sampled request; unset is this branch. The
 knob is read per request, but the server owns the environment, so each arm is
-its own server process with everything else identical.
+its own server process with everything else identical. It is disable-only by
+design: it can put a qualified family's sampled requests back on the greedy
+route, and cannot put an unqualified family onto the sampled one, because the
+declaration is the family's to make.
 
 ## Engine-level A/B (`mtp_generate_step` directly, 1200 tokens)
 

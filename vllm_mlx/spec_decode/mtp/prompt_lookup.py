@@ -18,7 +18,13 @@ class PromptLookupMatch:
     tokens: tuple[int, ...]
 
 
-@dataclass(frozen=True)
+# ``kw_only``: every field here is a safety or sizing decision a family made
+# deliberately, and two of them are booleans. Field order must not be part of
+# the API -- ``PromptLookupPolicy(True, 8, 10, 24)`` silently changed meaning
+# when ``enabled_under_sampling`` was added beside the flag it belongs next to,
+# and a qualification flag is the last thing that should be settable by
+# position.
+@dataclass(frozen=True, kw_only=True)
 class PromptLookupPolicy:
     """Model-qualified prompt lookup policy captured at request start."""
 
