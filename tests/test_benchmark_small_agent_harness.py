@@ -428,6 +428,24 @@ def test_battery_rejects_cedar_outlasting_pine(tmp_path: Path) -> None:
     assert scored["passed"] is False
 
 
+def test_battery_accepts_negated_cedar_outlasting(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "search_battery")
+    history = [
+        {"name": "search_web", "ok": True, "arguments": {"query": "battery"}},
+        *[
+            {"name": "open_url", "ok": True, "arguments": {"url": url}}
+            for url in task.pages
+        ],
+    ]
+    final = (
+        "Cedar Mini does not outlast Pine Mini; Pine Mini lasts 5 hours longer. "
+        "https://bench.test/cedar https://bench.test/pine"
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
+    assert scored["semantic_constraints_ok"] is True
+    assert scored["passed"] is True
+
+
 def test_battery_requires_hours_for_the_numeric_gap(tmp_path: Path) -> None:
     task = next(task for task in BENCHMARK.TASKS if task.id == "search_battery")
     history = [
@@ -603,6 +621,24 @@ def test_incident_rejects_negated_payment_cause(tmp_path: Path) -> None:
     scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
     assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
+
+
+def test_incident_accepts_negation_of_refunds(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "organize_incident")
+    (tmp_path / "incident.md").write_text(
+        "Payment checkout errors—not refunds—caused the $10,000 loss after "
+        "payment-sdk 4.8.0 drove the error rate to 22%. Corrective action: "
+        "rollback 4.8.0."
+    )
+    history = [
+        {"name": "read_file", "ok": True, "arguments": {"path": path}}
+        for path in task.required_reads
+    ] + [
+        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
+    ]
+    scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
+    assert scored["semantic_constraints_ok"] is True
+    assert scored["passed"] is True
 
 
 def test_incident_accepts_causal_evidence_and_corrective_action(tmp_path: Path) -> None:

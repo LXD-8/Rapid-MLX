@@ -768,7 +768,7 @@ def score_task(
             re.IGNORECASE | re.DOTALL,
         )
         payment_cause_is_negated = re.search(
-            r"(?:payment|checkout).{0,80}(?:error|failure).{0,40}(?:was|is|were|are)?\s*(?:not|never).{0,20}(?:cause|caus|driv|responsib)",
+            r"(?:payment|checkout)[^.!?;]{0,80}(?:error|failure)s?[^.!?;]{0,30}(?:(?:was|is|were|are)\s+(?:not|never)[^.!?;]{0,20}(?:cause|driver|responsib)|did\s+not\s+cause)",
             artifact_text,
             re.IGNORECASE | re.DOTALL,
         )
@@ -802,10 +802,15 @@ def score_task(
             final,
             re.IGNORECASE | re.DOTALL,
         )
-        reversed_or_negated = re.search(
-            r"\bpine(?: mini)?\b[^.!?\n]{0,40}\b(?:not|isn't|doesn't)\b[^.!?\n]{0,30}\blonger\b|\bcedar(?: mini)?\b[^.!?\n]{0,60}(?:\b(?:lasts?|is|has|offers|runs?)\b[^.!?\n]{0,30}\blonger\b|\boutlasts?\b)",
+        pine_is_negated = re.search(
+            r"\bpine(?: mini)?\b[^.!?\n]{0,40}\b(?:not|isn't|doesn't)\b[^.!?\n]{0,30}\blonger\b",
             final,
             re.IGNORECASE | re.DOTALL,
+        )
+        cedar_is_longer = re.search(
+            r"\bcedar(?: mini)?\b\s+(?:actually\s+)?(?:lasts?|is|runs?)\s+(?!not\b)(?:\w+\s+){0,4}longer\b|\bcedar(?: mini)?\b\s+(?:actually\s+)?outlasts?\s+(?:pine(?: mini)?|it)\b",
+            final,
+            re.IGNORECASE,
         )
         gap_is_five_hours = re.search(
             r"(?<![\d.])5(?:\s|-)+hours?\b",
@@ -813,7 +818,10 @@ def score_task(
             re.IGNORECASE,
         )
         semantic_constraints_ok = bool(
-            pine_is_longer and gap_is_five_hours and not reversed_or_negated
+            pine_is_longer
+            and gap_is_five_hours
+            and not pine_is_negated
+            and not cedar_is_longer
         )
     if task.id == "search_release":
         corrected_claim = re.compile(
