@@ -39,9 +39,13 @@ combined in the public claim.
   The reusable lesson is lifecycle/fairness instrumentation, not the scheduler
   replacement.
 
-## Follow-up candidate
+## Closed follow-up exploration
 
-Spike scheduler-level one-step lookahead for pure decode, with composition
-changes, cancellation, grammar/logit processors, MTP transactional state, and
-cache ownership as explicit break conditions. This must be a separate PR and
-must beat the current continuous-MTP server under B=1 and B=4 quality gates.
+A scheduler-level one-step-lookahead spike found no independent overlap to
+capture: the generation batch already keeps the current token lazy while it
+constructs the next forward pass, explicitly submits the next token and cache,
+and only then materializes the current token. A second pending-job state
+machine would duplicate that dependency chain while adding cancellation,
+grammar/logit-processor, MTP transaction, and cache-ownership risk. Do not
+productize it without a new trace showing a real idle gap under both B=1 and
+B=4 quality gates.
