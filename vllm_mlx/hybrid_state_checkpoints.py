@@ -208,12 +208,16 @@ def attach_checkpoints(
     if len(holders) != len(cache):
         return
     for layer, holder in zip(cache, holders):
-        if holder is None or not is_recurrent_layer(layer):
+        if not is_recurrent_layer(layer):
             continue
-        if max_position is not None:
+        if holder is not None and max_position is not None:
             holder = holder.truncated(max_position)
-            if not holder.positions:
-                continue
+        if holder is None or not holder.positions:
+            # ``holders`` is the source of truth: a layer copied from a
+            # checkpoint-bearing cache must not keep a stale holder.
+            if hasattr(layer, CHECKPOINT_ATTR):
+                delattr(layer, CHECKPOINT_ATTR)
+            continue
         setattr(layer, CHECKPOINT_ATTR, holder)
 
 

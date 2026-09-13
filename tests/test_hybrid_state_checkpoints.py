@@ -172,9 +172,17 @@ class TestRecordAndRestore:
         # The live holders are untouched: later chunks keep extending them.
         assert holders[1].positions == (2048, 4096, 6144)
 
+        # A layer copied from a checkpoint-bearing cache carries the old
+        # holder; attaching an empty/absent one must clear it.
         short_entry = _cache(2)
+        attach_checkpoints(short_entry, holders)
+        assert layer_checkpoints(short_entry[1]).positions == (2048, 4096, 6144)
         attach_checkpoints(short_entry, holders, max_position=1000)
         assert layer_checkpoints(short_entry[1]) is None
+        assert not hasattr(short_entry[1], CHECKPOINT_ATTR)
+        attach_checkpoints(short_entry, holders)
+        attach_checkpoints(short_entry, [None, None, None])
+        assert not hasattr(short_entry[1], CHECKPOINT_ATTR)
 
     def test_record_needs_aligned_holders_and_positive_position(self):
         cache = _cache(0)
@@ -278,6 +286,13 @@ class TestGuards:
 
         cache = _cache(0)
         assert _snap_hybrid_trim(cache, 100, 0) is None
+        # A non-trimmable layer that is not a real ArraysCache keeps the
+        # pre-checkpoint refusal even when the real layers have checkpoints.
+        liar = _cache(0) + [_LookAlikeLayer()]
+        liar_holders = collect_checkpoints(liar)
+        record_checkpoints(liar, liar_holders, 2048, max_count=4, stride=1)
+        attach_checkpoints(liar, liar_holders)
+        assert _snap_hybrid_trim(liar, 4096, 3000) is None
         assert _snap_hybrid_trim(cache, 0, 100) is None
         # Recurrent layers without any checkpoint: no position to resume at.
         assert _snap_hybrid_trim(cache, 4096, 3000) is None
