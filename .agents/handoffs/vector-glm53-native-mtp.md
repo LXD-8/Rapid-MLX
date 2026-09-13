@@ -40,12 +40,20 @@ Original compatibility work: `vector/glm53-native-mtp`. Follow-up qualification:
   (1.055x, 50.79%), and K=3 was 30.329 to 26.760 tok/s (0.882x, 32.31%).
   All depths first diverged from serial greedy output at token 109. The spike
   was discarded and the alias remains fail-closed.
+- A subsequent qualification of mlx-vlm #2206 + #2231 + #2234 on the exact
+  same target supersedes that legacy-injector rejection: 12/12 repeated MTP
+  tasks passed, every reasoning/final byte matched a 6/6 same-branch AR
+  control, median paired throughput improved 1.221x, and median category
+  throughput reached 33.655 tok/s versus 31.813 tok/s for the same-width oMLX
+  control. Peak Metal was 188.499 GB versus 184.147 GB for AR.
 
 ## Unresolved
 
-- Choose between waiting for the next tagged mlx-vlm release and vendoring the
-  GLM-specific drafter/verifier. The upstream PR touches a broad cache,
-  quantized-verifier, model, and speculative-runtime surface.
+- Wait for #2206, #2231, and #2234 to merge and appear in a tagged mlx-vlm
+  release. Do not vendor only part of the cache transaction.
+- Connect that released path to Rapid's GLM serving lane and repeat the six-task
+  gate through the Rapid server; direct mlx-vlm qualification is not sufficient
+  evidence that the product integration preserves the gain.
 - Qualify `dfp-official/GLM-5.3-Flash-oQ4e-mtp` once the policy-controlled HF
   cache has capacity. It had 77 GiB free during this campaign versus the
   repository's approximately 182 GB size; no download was attempted.
@@ -62,7 +70,9 @@ Original compatibility work: `vector/glm53-native-mtp`. Follow-up qualification:
 
 ## Recommended next action
 
-Keep native MTP disabled. Wait for a tagged post-v0.7 mlx-vlm artifact and
-policy-compliant oQ4e cache capacity, then re-run the exact workload gate in
-`docs/engineering/performance/2026-09-12-glm53-flash-next-tier.md` before any
-alias capability or dependency change.
+Keep the legacy injector disabled. Once an mlx-vlm release contains #2206,
+#2231, and #2234, update Rapid's pin, connect the cache-owned path, and run the
+exact six-task server gate in
+`docs/engineering/performance/2026-09-12-glm53-real-task-mtp.md` before any
+alias capability change. Treat oQ4e as a separate quantization-quality and
+prefill-throughput follow-up, not the blocker for uniform-Q4 MTP.

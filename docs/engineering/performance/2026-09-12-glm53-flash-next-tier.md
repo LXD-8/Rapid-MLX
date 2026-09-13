@@ -21,7 +21,30 @@ Hugging Face cache, and the K=0 production path has completed a paired server
 benchmark. A subsequent full-model K=1/2/3 campaign failed the release gate:
 the best paired gain was only 1.064x, K=3 regressed to 0.882x, and every MTP
 depth diverged from serial greedy output at token 109 on the qualification
-prompt. Keep native MTP disabled for this alias.
+prompt. Keep that legacy injector disabled for this alias.
+
+### Subsequent cache-owned MTP qualification
+
+The rejection above describes Rapid's experimental injector and mlx-vlm main
+before the cache-owned MTP rebuild. It is historical evidence against reviving
+that implementation, not the final result for native MTP. A later campaign
+qualified mlx-vlm PR #2206 together with the strict Q4 head fix in #2231 and
+the gate/up storage fusion in #2234 on this same `76add2a` target and its
+target-matched 3.9 GB Q4 sidecar.
+
+Across coding, knowledge, math, exact instruction following, constrained
+creative writing, and a 3,126-token contract retrieval task, two consecutive
+MTP runs passed 12/12 and were byte-identical to each other. A same-branch AR
+control passed 6/6; MTP matched every complete AR reasoning and final response
+byte-for-byte. The paired per-task gains were 1.253x, 1.306x, 1.188x, 1.297x,
+1.179x, and 1.082x, for a 1.221x median. Median category throughput was 33.655
+tok/s, 5.8% above the 31.813 tok/s same-width oMLX comparison. Peak Metal was
+188.499 GB versus 184.147 GB for AR.
+
+This supersedes the earlier performance/parity rejection, but it does not make
+MTP current Rapid production behavior. #2206, #2231, and #2234 remain upstream
+release dependencies. The complete commands, task rubric, and artifacts are
+recorded in `2026-09-12-glm53-real-task-mtp.md`.
 
 ## Same-artifact runtime comparison
 
@@ -48,7 +71,9 @@ median of 30.406 tok/s (30.827 / 30.352 / 30.406). Latest mlx-vlm measured
 29.016 tok/s at K=0 and 27.774 tok/s at K=3; its K=3 run accepted 106 of 197
 drafts (53.8%) and was 4.3% slower than its own baseline. The upstream 43.67
 tok/s result therefore depends on its reported 90.5% acceptance workload and
-must not be generalized to arbitrary chat/code prompts.
+must not be generalized to arbitrary chat/code prompts. These measurements
+predate #2206's cache-owned transaction; the six-task qualification above is
+the current decision evidence.
 
 ### Full-model native-head qualification
 
@@ -77,9 +102,11 @@ acceptance rate alone is not a release criterion.
 
 ### oQ4e follow-up blocked by cache capacity
 
-`dfp-official/GLM-5.3-Flash-oQ4e-mtp` is the strongest next checkpoint to
-qualify: it is calibrated mixed precision, preserves MTP, and is the artifact
-family behind oMLX's 482.3 / 443.2 / 449.6 tok/s published prefill results.
+`dfp-official/GLM-5.3-Flash-oQ4e-mtp` remains the strongest checkpoint-format
+follow-up for measuring quality retention and prefill throughput: it is
+calibrated mixed precision, preserves MTP, and is the artifact family behind
+oMLX's 482.3 / 443.2 / 449.6 tok/s published prefill results. It is no longer
+the blocker for proving a useful MTP runtime on the cached uniform-Q4 target.
 At the time of this campaign the policy-controlled Hugging Face volume had
 77 GiB free, while the repository reports approximately 182 GB. Per Studio
 storage policy no download was attempted, no other model was deleted, and no
@@ -293,20 +320,25 @@ decision after upstream publishes a fixed revision.
 
 ## Implementation order and release gate
 
-1. Land the fail-closed compatibility seam.
-2. Pin a tagged mlx-vlm revision that contains the GLM rewrite, or vendor only
-   the GLM drafter/verifier after an Atlas dependency review.
-3. Restore the full target without redirecting the policy-controlled HF cache.
-4. Run paired server tests at K=0, K=1, K=2, and K=3 with identical prompts and
-   seeds; record decode tok/s, acceptance by position, TTFT, peak/active memory,
-   and token/text equality.
-5. Enable native MTP only if sustained batch-one decode is at least 1.10x with
-   exact greedy parity, no workload bucket below 0.95x, and no server lifecycle
-   regression. A default-on decision should require at least 1.20x.
+1. Keep the fail-closed compatibility seam already merged in Rapid.
+2. Wait for an mlx-vlm release containing #2206, #2231, and #2234; do not pin
+   an untagged commit or vendor a partial transaction.
+3. Update Rapid's dependency and connect the released cache-owned GLM MTP path
+   to the serving lane.
+4. Re-run the exact six-task gate through the Rapid OpenAI-compatible server,
+   with identical prompts and seeds; record decode tok/s, acceptance, TTFT,
+   peak/active memory, and complete reasoning/final equality.
+5. Enable native MTP only if the released integration retains the measured
+   1.10x minimum, exact greedy parity, no workload bucket below 0.95x, and no
+   server lifecycle regression. A default-on decision requires broader task
+   evidence in addition to the observed 1.221x six-task median.
 
 ## Primary references
 
 - <https://github.com/Blaizzy/mlx-vlm/pull/2127>
+- <https://github.com/Blaizzy/mlx-vlm/pull/2206>
+- <https://github.com/Blaizzy/mlx-vlm/pull/2231>
+- <https://github.com/Blaizzy/mlx-vlm/pull/2234>
 - <https://github.com/IngeniousIdiocy/ds4/blob/glm53-m3ultra/README.md>
 - <https://github.com/jundot/omlx/releases/tag/v0.6.4>
 - <https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2>
