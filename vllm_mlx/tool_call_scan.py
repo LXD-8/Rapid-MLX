@@ -41,7 +41,41 @@ __all__ = [
     "declared_tool_names",
     "split_marked_calls",
     "split_marked_parameters",
+    "trim_wrapping_newlines",
 ]
+
+
+def trim_wrapping_newlines(value: str) -> str:
+    r"""Remove the ONE newline the wire puts on each side of a value.
+
+    The Qwen3-Coder chat template renders a parameter as
+    ``<parameter=NAME>\n`` + value + ``\n</parameter>\n``, so exactly one
+    newline per side is markup and everything else -- including the
+    indentation of the FIRST line -- is payload. Stripping all surrounding
+    whitespace instead silently de-indented the opening line of every value,
+    which for a coding agent's ``new_string`` means the edit no longer
+    compiles or, worse, changes scope while still parsing (#3401).
+
+    This matches the two mature engines that serve this wire format: vLLM's
+    ``_trim_wrapping_newlines`` (``vllm/parser/qwen3.py``) and SGLang's
+    ``qwen3_coder_detector`` both drop one leading and one trailing ``\n``
+    and nothing else, in their streaming and non-streaming paths alike.
+    ``\r\n`` is handled here as well so a CRLF emission loses its markup
+    rather than leaving a stray ``\r`` at the edge of the payload.
+
+    Same lesson as ``_decode_json_like`` in ``api/tool_calling.py``: on this
+    wire, whitespace around a value is only safe to remove where the format
+    says that whitespace is markup.
+    """
+    if value.startswith("\r\n"):
+        value = value[2:]
+    elif value.startswith("\n"):
+        value = value[1:]
+    if value.endswith("\r\n"):
+        value = value[:-2]
+    elif value.endswith("\n"):
+        value = value[:-1]
+    return value
 
 
 def declared_tool_names(request: dict[str, Any] | None) -> frozenset[str] | None:
@@ -220,10 +254,10 @@ def split_marked_parameters(
 ) -> list[tuple[str, str]] | None:
     """``(name, value)`` for each parameter in ``block``.
 
-    ``opener`` must capture the parameter name in group 1. Values are
-    stripped of surrounding whitespace: in these formats the newlines and
-    indentation around a value are layout, not payload. Whitespace *inside*
-    a value is preserved.
+    ``opener`` must capture the parameter name in group 1. A value keeps
+    every byte it was sent except the one wrapping newline per side that the
+    wire format adds -- see ``trim_wrapping_newlines``. Parameter *names* are
+    still stripped: those are identifiers, not payload.
     """
     openers = list(re.finditer(opener, block))
     out: list[tuple[str, str]] = []
@@ -244,7 +278,9 @@ def split_marked_parameters(
         segmented = segment_by_next_opener(block, openers, i, closer, valid_names)
         sibling = _next_sibling(block, openers, i, closer, valid_names)
         if segmented is not None:
-            out.append((openers[i].group(1).strip(), segmented[0].strip()))
+            out.append(
+                (openers[i].group(1).strip(), trim_wrapping_newlines(segmented[0]))
+            )
         # Jump to the sibling, not i+1: the openers in between are literal
         # text inside the value just consumed. Advancing one at a time is
         # what turns a value containing "<parameter=x>" into a phantom

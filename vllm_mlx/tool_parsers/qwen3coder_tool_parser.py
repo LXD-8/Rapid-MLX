@@ -32,7 +32,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..api.tool_calling import _decode_json_like, _schema_type
-from ..tool_call_scan import split_marked_parameters
+from ..tool_call_scan import split_marked_parameters, trim_wrapping_newlines
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
@@ -87,8 +87,16 @@ def _is_string_param(param_name: str, param_config: dict) -> bool:
 def _convert_param_value(
     param_value: str, param_name: str, param_config: dict, func_name: str
 ) -> Any:
-    """Convert parameter value based on its type in the schema."""
-    if param_value.lower() == "null":
+    """Convert parameter value based on its type in the schema.
+
+    Scalar keywords are matched against a whitespace-trimmed copy, never
+    against the value that gets returned. Values used to arrive here already
+    ``.strip()``-ed; now that only the wire's wrapping newline is removed
+    (#3401), a model that pads a scalar -- ``<parameter=flag> true </parameter>``
+    -- must still resolve to the scalar. Payload-bearing types keep every byte.
+    """
+    keyword = param_value.strip()
+    if keyword.lower() == "null":
         return None
 
     if param_name not in param_config:
@@ -109,16 +117,16 @@ def _convert_param_value(
         return param_value
     elif param_type.startswith(("int", "uint", "long", "short", "unsigned")):
         try:
-            return int(param_value)
+            return int(keyword)
         except (ValueError, TypeError):
             return param_value
     elif param_type.startswith(("num", "float", "double")):
         try:
-            return float(param_value)
+            return float(keyword)
         except (ValueError, TypeError):
             return param_value
     elif param_type in ("boolean", "bool", "binary"):
-        return param_value.lower() == "true"
+        return keyword.lower() == "true"
     else:
         if param_type in ("object", "array", "arr") or param_type.startswith(
             ("dict", "list")
@@ -471,7 +479,7 @@ class Qwen3CoderToolParser(ToolParser):
             p_name = match_text[:idx]
             if p_name in param_dict or p_name not in param_config:
                 continue
-            p_value = str(match_text[idx + 1 :]).strip("\n")
+            p_value = trim_wrapping_newlines(str(match_text[idx + 1 :]))
             param_dict[p_name] = _convert_param_value(
                 p_value, p_name, param_config, function_name
             )
