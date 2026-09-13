@@ -199,6 +199,15 @@ Two narrowly scoped Rapid spikes did not clear the performance gate:
   with individual ratios from 0.931x to 1.024x. All sampled greedy fingerprints
   matched. The full-model effect was both immaterial and unstable, so the
   fusion was rejected.
+- Shapeless-compiling the exact FP32 index-score expression preserved every
+  score element across 64 BF16/FP16 cases spanning batch 1/2, query lengths
+  1/2/8/32, and multiple pool lengths. The isolated score call improved by
+  1.122x, 1.103x, 1.081x, and 1.062x at pooled lengths 2K, 8K, 16K, and 32K.
+  That saving did not survive the complete request: a same-host paired
+  six-task run kept all outputs and reasoning byte-identical, but delivered a
+  0.998x median throughput ratio. Long context gained only 1.014x and the
+  noisiest category fell to 0.959x. The compile wrapper was therefore
+  rejected rather than promoting another micro-only result.
 - Slicing the recurrent prefill into 512-token pieces was also re-measured
   against current mlx-vlm rather than inferred from an older vendored runtime.
   A production-shaped Q4 BF16 layer measured 41.17 versus 40.94 ms at 2,048
