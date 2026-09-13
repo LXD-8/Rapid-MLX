@@ -307,8 +307,10 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
 
+    bound = []
+    drafter = SimpleNamespace(bind=lambda model: bound.append(model))
     runtime = SimpleNamespace(
-        drafter="drafter",
+        drafter=drafter,
         kind="mtp",
         block_size=3,
         algorithm="mtp",
@@ -337,6 +339,7 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
     )
 
     assert loaded == [(QWEN36_35B_4BIT.target_repo, QWEN36_35B_4BIT.target_revision)]
+    assert bound == ["model"]
     assert app_kwargs["backend_name"] == "Native MTP"
     assert app_kwargs["runtime"] is runtime
     assert app_kwargs["generation_kwargs_fn"](
@@ -345,7 +348,7 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
         "max_tokens": 9,
         "temperature": 0.0,
         "top_p": 1.0,
-        "draft_model": "drafter",
+        "draft_model": drafter,
         "draft_kind": "mtp",
         "draft_block_size": 3,
     }

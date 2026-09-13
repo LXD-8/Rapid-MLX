@@ -83,6 +83,10 @@ def run_native_mtp_server(
             drafter_revision=pair.drafter_revision,
             block_size=pair.block_size,
         )
+        # The request-time MTP reset also binds, but doing it here turns an
+        # incompatible target/sidecar pair into a deterministic startup error
+        # on the same thread that owns generation.
+        runtime.drafter.bind(model)
         logger.info(
             "Native MTP target and sidecar loaded in %.1fs",
             time.perf_counter() - started,

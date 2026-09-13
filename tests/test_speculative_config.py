@@ -143,6 +143,10 @@ def test_parse_native_mtp_backend() -> None:
     [
         ('{"method":"mtp","backend":"standard"}', "backend must be 'native'"),
         (
+            '{"method":"suffix","backend":"native"}',
+            "unsupported speculative-config key",
+        ),
+        (
             '{"method":"mtp","backend":"native","continuous_batching":true}',
             "serial",
         ),
