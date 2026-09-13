@@ -46,6 +46,7 @@ def test_main_fails_when_a_request_has_an_infrastructure_error(
         tools=["search_web"],
     )
     monkeypatch.setattr(BENCHMARK, "TASKS", [task])
+
     def unavailable(*_args, **_kwargs):
         raise ConnectionError("unavailable")
 
@@ -117,9 +118,7 @@ def test_safe_ast_interpreter_handles_conditional_expression() -> None:
         "    return low if value < low else high if value > high else value\n"
     ).body[0]
     observed = [
-        BENCHMARK.evaluate_function(
-            function, {"value": value, "low": -5, "high": 5}
-        )
+        BENCHMARK.evaluate_function(function, {"value": value, "low": -5, "high": 5})
         for value in (-10, -3, 7)
     ]
     assert observed == [-5, -3, 5]
@@ -337,7 +336,9 @@ def test_policy_requires_complete_deadline_time_and_timezone(tmp_path: Path) -> 
     ]
     incomplete = "October 14, 2026, $25,000 — https://grants.test/2026"
     complete = "October 14, 2026 at 5 PM PT, $25,000 — https://grants.test/2026"
-    assert BENCHMARK.score_task(task, tmp_path, incomplete, history, {})["passed"] is False
+    assert (
+        BENCHMARK.score_task(task, tmp_path, incomplete, history, {})["passed"] is False
+    )
     assert BENCHMARK.score_task(task, tmp_path, complete, history, {})["passed"] is True
 
 
@@ -567,7 +568,9 @@ def test_config_verifier_requires_integer_port(tmp_path: Path) -> None:
 def test_clamp_verifier_rejects_hardcoded_bounds(tmp_path: Path) -> None:
     target = tmp_path / "utils" / "math.py"
     target.parent.mkdir()
-    target.write_text("def clamp(value, low, high):\n    return max(0, min(10, value))\n")
+    target.write_text(
+        "def clamp(value, low, high):\n    return max(0, min(10, value))\n"
+    )
     task = next(task for task in BENCHMARK.TASKS if task.id == "code_clamp")
     passed, _ = BENCHMARK.run_task_tests(task, tmp_path)
     assert passed is False
@@ -616,9 +619,7 @@ def test_incident_rejects_contradictory_cause_and_action(tmp_path: Path) -> None
     history = [
         {"name": "read_file", "ok": True, "arguments": {"path": path}}
         for path in task.required_reads
-    ] + [
-        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
-    ]
+    ] + [{"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}]
     scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
     assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
@@ -633,9 +634,7 @@ def test_incident_rejects_negated_payment_cause(tmp_path: Path) -> None:
     history = [
         {"name": "read_file", "ok": True, "arguments": {"path": path}}
         for path in task.required_reads
-    ] + [
-        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
-    ]
+    ] + [{"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}]
     scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
     assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
@@ -651,9 +650,7 @@ def test_incident_accepts_negation_of_refunds(tmp_path: Path) -> None:
     history = [
         {"name": "read_file", "ok": True, "arguments": {"path": path}}
         for path in task.required_reads
-    ] + [
-        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
-    ]
+    ] + [{"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}]
     scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
     assert scored["semantic_constraints_ok"] is True
     assert scored["passed"] is True
@@ -668,9 +665,7 @@ def test_incident_rejects_present_tense_negated_payment_cause(tmp_path: Path) ->
     history = [
         {"name": "read_file", "ok": True, "arguments": {"path": path}}
         for path in task.required_reads
-    ] + [
-        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
-    ]
+    ] + [{"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}]
     scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
     assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
@@ -686,9 +681,7 @@ def test_incident_accepts_causal_evidence_and_corrective_action(tmp_path: Path) 
     history = [
         {"name": "read_file", "ok": True, "arguments": {"path": path}}
         for path in task.required_reads
-    ] + [
-        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
-    ]
+    ] + [{"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}]
     scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
     assert scored["semantic_constraints_ok"] is True
     assert scored["passed"] is True

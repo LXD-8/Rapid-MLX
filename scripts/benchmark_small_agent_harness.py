@@ -531,9 +531,7 @@ def run_task_tests(task: Task, root: Path) -> tuple[bool, str]:
                 (7, -5, 5, 5),
             ]
             ok = all(
-                evaluate_function(
-                    function, {"value": value, "low": low, "high": high}
-                )
+                evaluate_function(function, {"value": value, "low": low, "high": high})
                 == expected
                 for value, low, high, expected in cases
             )
