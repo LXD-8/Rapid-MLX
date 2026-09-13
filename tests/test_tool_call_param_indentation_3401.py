@@ -237,3 +237,107 @@ def test_nemotron_xml_body_keeps_indentation() -> None:
     _, calls = parse_tool_calls(text, None)
     assert calls, "nemotron scanner recovered no call"
     assert json.loads(calls[0].function.arguments)["new_string"] == INDENTED_BODY
+
+
+# ---------------------------------------------------------------------------
+# Conversion must happen exactly once (codex adversarial review, round 2)
+# ---------------------------------------------------------------------------
+
+
+def _stream_arguments(chunks: list[str], request: dict) -> dict:
+    """Concatenate streamed ``function.arguments`` fragments and parse them."""
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    parser.reset()
+    previous = ""
+    fragments: list[str] = []
+    for chunk in chunks:
+        current = previous + chunk
+        delta = parser.extract_tool_calls_streaming(
+            previous_text=previous,
+            current_text=current,
+            delta_text=chunk,
+            request=request,
+        )
+        for tc in (delta or {}).get("tool_calls") or []:
+            args = (tc.get("function") or {}).get("arguments")
+            if args:
+                fragments.append(args)
+        previous = current
+    return json.loads("".join(fragments))
+
+
+@pytest.mark.parametrize(
+    "wire",
+    [
+        # The value IS the four characters n-u-l-l. One conversion decodes the
+        # JSON string; a second one reads that result as the null keyword.
+        '"null"',
+        # Padded: only reachable once values stop being .strip()-ed, which is
+        # how this PR surfaced a defect that predates it.
+        '" null "',
+        '"true"',
+        '"42"',
+    ],
+)
+def test_json_quoted_value_is_converted_exactly_once(wire: str) -> None:
+    """A JSON-quoted string value must survive streaming unchanged.
+
+    ``_close_string_increment`` used to re-run ``_convert_param_value`` on a
+    value its caller had already converted. That conversion is not idempotent:
+    ``'"null"'`` decodes to the Python string ``"null"`` on the first pass and
+    to ``None`` on the second, so the streamed arguments disagreed with the
+    non-streamed ones. Pre-existing on main for ``'"null"'`` -- this PR widened
+    it to the padded form before fixing both.
+    """
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "f",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"x": {"type": "string"}},
+                    },
+                },
+            }
+        ]
+    }
+    chunks = [
+        "<tool_call>\n<function=f>\n",
+        "<parameter=x>\n" + wire[:1],
+        wire[1:] + "\n</parameter>\n</function>\n</tool_call>",
+    ]
+    streamed = _stream_arguments(chunks, request)
+    non_streamed = _arguments("".join(chunks), request)
+    assert streamed == non_streamed, (
+        f"stream/non-stream divergence for {wire!r}: {streamed!r} != {non_streamed!r}"
+    )
+    assert streamed["x"] == json.loads(wire)
+
+
+def test_padded_bare_boolean_agrees_across_paths() -> None:
+    """The scalar-keyword guard also closed a divergence that predates this
+    PR: a padded bare ``true`` streamed as ``False`` while the non-streaming
+    path returned ``True``."""
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "f",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"x": {"type": "boolean"}},
+                    },
+                },
+            }
+        ]
+    }
+    chunks = [
+        "<tool_call>\n<function=f>\n",
+        "<parameter=x>\n ",
+        "true \n</parameter>\n</function>\n</tool_call>",
+    ]
+    assert _stream_arguments(chunks, request) == {"x": True}
+    assert _arguments("".join(chunks), request) == {"x": True}

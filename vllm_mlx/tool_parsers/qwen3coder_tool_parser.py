@@ -376,19 +376,39 @@ class Qwen3CoderToolParser(ToolParser):
         return inner
 
     def _close_string_increment(
-        self, param_name: str, full_value: str, param_config: dict
+        self,
+        param_name: str,
+        full_value: str,
+        param_config: dict,
+        *,
+        already_converted: bool = False,
     ) -> str:
         """Emit the closing fragment for an in-flight string param now that
         ``</parameter>`` has arrived. Handles both the long-string case
         (opener already emitted; emit tail + closing quote) and the short-
         string case (opener never emitted; emit the whole ``"name": "value"``).
+
+        ``already_converted`` says the caller has ALREADY run
+        ``_convert_param_value`` on ``full_value``. It has to, for a
+        JSON-quoted wire value: the long-string branch below slices
+        ``full_value`` by ``in_param_emitted_chars``, which counts decoded
+        characters. Converting a second time here re-interprets a decoded
+        payload as if it were still wire text, and the conversion is not
+        idempotent — a string whose value is ``null`` decodes to the Python
+        string ``"null"`` on the first pass and then to ``None`` on the
+        second, so the streamed arguments disagreed with the non-streamed
+        ones for that input. Convert exactly once.
         """
         if not self.in_param_opened:
-            converted = _convert_param_value(
-                full_value,
-                param_name,
-                param_config,
-                self.current_function_name or "",
+            converted = (
+                full_value
+                if already_converted
+                else _convert_param_value(
+                    full_value,
+                    param_name,
+                    param_config,
+                    self.current_function_name or "",
+                )
             )
             serialized = json.dumps(converted, ensure_ascii=False)
             prefix = "" if self.param_count == 0 else ", "
@@ -1250,7 +1270,10 @@ class Qwen3CoderToolParser(ToolParser):
                             else pv
                         )
                         frag = self._close_string_increment(
-                            self.in_param_name, close_value, param_config
+                            self.in_param_name,
+                            close_value,
+                            param_config,
+                            already_converted=json_string_pending,
                         )
                         if frag:
                             json_fragments.append(frag)
