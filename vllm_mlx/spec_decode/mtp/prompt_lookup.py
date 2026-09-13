@@ -18,22 +18,24 @@ class PromptLookupMatch:
     tokens: tuple[int, ...]
 
 
-# ``kw_only``: every field here is a safety or sizing decision a family made
-# deliberately, and two of them are booleans. Field order must not be part of
-# the API -- ``PromptLookupPolicy(True, 8, 10, 24)`` silently changed meaning
-# when ``enabled_under_sampling`` was added beside the flag it belongs next to,
-# and a qualification flag is the last thing that should be settable by
-# position.
-@dataclass(frozen=True, kw_only=True)
+@dataclass(frozen=True)
 class PromptLookupPolicy:
     """Model-qualified prompt lookup policy captured at request start."""
 
+    # This flag has a second, narrower half -- ``enabled_under_sampling``,
+    # declared last and explained on ``admits_temperature``.
     enabled_by_default: bool = False
-    # Per-family opt-in for temperature > 0; see ``admits_temperature``.
-    enabled_under_sampling: bool = False
     min_ngram: int = 8
     max_ngram: int = 10
     max_tokens: int = 24
+    # Appended rather than placed beside ``enabled_by_default`` where it
+    # belongs by meaning: this class is exported, so field ORDER is API.
+    # Inserting a bool in the middle leaves ``PromptLookupPolicy(True, 8, 10,
+    # 24)`` valid and silently reinterpreted -- the 8 becomes the sampled
+    # qualification -- and a safety flag must never be set by accident.
+    # ``test_prompt_lookup_policy_keeps_its_positional_field_order`` pins this
+    # so the next field cannot be inserted quietly.
+    enabled_under_sampling: bool = False
 
     def __post_init__(self) -> None:
         if self.min_ngram < 2:

@@ -112,17 +112,30 @@ def test_prompt_lookup_policy_withholds_sampling_until_a_family_qualifies() -> N
     assert qualified.admits_temperature(0.0) is True
 
 
-def test_prompt_lookup_policy_fields_are_keyword_only() -> None:
-    """Field order is not API: a qualification flag must not be positional.
+def test_prompt_lookup_policy_keeps_its_positional_field_order() -> None:
+    """Field order is API here, so a new field goes last and this says why.
 
-    Both gates on this policy are booleans sitting next to sizing integers.
-    Adding ``enabled_under_sampling`` beside the flag it belongs with silently
-    reinterpreted any positional construction -- ``PromptLookupPolicy(True, 8,
-    10, 24)`` would have passed ``8`` as the sampled qualification. Keyword-only
-    makes that a TypeError instead of a family being enabled by accident.
+    ``PromptLookupPolicy`` is exported, so a positional construction outside
+    this repo keeps working only if new fields are appended. That is also the
+    safe direction for the content: inserting a bool in the middle leaves
+    ``PromptLookupPolicy(True, 8, 10, 24)`` valid and silently reinterpreted,
+    with the 8 landing on a qualification flag. Pinning the order makes the
+    next insertion fail here rather than at someone's call site.
     """
-    with pytest.raises(TypeError):
-        PromptLookupPolicy(True, 8, 10, 24)  # type: ignore[misc]
+    import dataclasses
+
+    assert [f.name for f in dataclasses.fields(PromptLookupPolicy)] == [
+        "enabled_by_default",
+        "min_ngram",
+        "max_ngram",
+        "max_tokens",
+        "enabled_under_sampling",
+    ]
+    # The old four-positional form still means what it meant.
+    legacy = PromptLookupPolicy(True, 8, 10, 24)
+    assert (legacy.enabled_by_default, legacy.min_ngram) == (True, 8)
+    assert (legacy.max_ngram, legacy.max_tokens) == (10, 24)
+    assert legacy.enabled_under_sampling is False
 
 
 def test_sampled_prompt_lookup_override_cannot_enable_an_unqualified_family(
