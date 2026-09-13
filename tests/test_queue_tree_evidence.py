@@ -100,8 +100,7 @@ def _manifest(tmp_path: Path) -> Path:
 
 def _mac_jobs() -> list[dict[str, Any]]:
     names = list(evidence.REQUIRED_MAC_JOBS) + [
-        'gui-golden-flows (chat, ["first"], 1)',
-        'gui-golden-flows (images, ["second"], 1)',
+        'gui-golden-flows (chat+images, ["first","second"], 2)',
     ]
     return [_job(10, 100 + index, name) for index, name in enumerate(names)]
 
@@ -191,10 +190,20 @@ def test_create_rejects_candidate_modified_trust_controls(tmp_path: Path):
 def test_create_rejects_partial_gui_matrix(tmp_path: Path):
     client = _configured_client()
     client.job_records[10] = [
-        job for job in client.job_records[10] if "(images," not in job["name"]
+        job for job in client.job_records[10] if "(chat+images," not in job["name"]
     ]
 
-    with pytest.raises(evidence.EvidenceError, match="groups: images"):
+    with pytest.raises(evidence.EvidenceError, match="groups: chat, images"):
+        evidence.create_evidence(client, "mac", 10, 30, TRUSTED, _manifest(tmp_path))
+
+
+def test_create_rejects_malformed_gui_bundle(tmp_path: Path):
+    client = _configured_client()
+    client.job_records[10][-1]["name"] = (
+        'gui-golden-flows (chat+unknown, ["first","second"], 2)'
+    )
+
+    with pytest.raises(evidence.EvidenceError, match="malformed group bundle"):
         evidence.create_evidence(client, "mac", 10, 30, TRUSTED, _manifest(tmp_path))
 
 
