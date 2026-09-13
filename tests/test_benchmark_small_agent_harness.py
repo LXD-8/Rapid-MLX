@@ -361,6 +361,25 @@ def test_battery_numeric_boundary_allows_sentence_period(tmp_path: Path) -> None
     )
     scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
     assert scored["required_hits"][1] is True
+    assert scored["semantic_constraints_ok"] is True
+
+
+def test_battery_rejects_reversed_or_negated_comparison(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "search_battery")
+    history = [
+        {"name": "search_web", "ok": True, "arguments": {"query": "battery"}},
+        *[
+            {"name": "open_url", "ok": True, "arguments": {"url": url}}
+            for url in task.pages
+        ],
+    ]
+    final = (
+        "Pine Mini is not longer; Cedar Mini is longer by 5 hours. "
+        "https://bench.test/cedar https://bench.test/pine"
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
 
 
 def test_release_support_rejects_negative_paraphrase(tmp_path: Path) -> None:
@@ -394,6 +413,25 @@ def test_release_support_accepts_explicit_yes_with_minimum_version(
     final = (
         "Yes; the minimum supported version is macOS 14.5, so macOS 15 works. "
         "https://docs.test/riverdb-3.2"
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
+    assert scored["semantic_constraints_ok"] is True
+    assert scored["passed"] is True
+
+
+def test_release_support_allows_a_corrected_rumor(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "search_release")
+    history = [
+        {"name": "search_web", "ok": True, "arguments": {"query": "RiverDB"}},
+        {
+            "name": "open_url",
+            "ok": True,
+            "arguments": {"url": "https://docs.test/riverdb-3.2"},
+        },
+    ]
+    final = (
+        "The forum claim that macOS 15 is unsupported is wrong; the release "
+        "notes say it is supported from 14.5. https://docs.test/riverdb-3.2"
     )
     scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
     assert scored["semantic_constraints_ok"] is True
@@ -547,6 +585,30 @@ def test_rewrite_accepts_saved_chat_access_paraphrase(tmp_path: Path) -> None:
     response = (
         "Subject: Maintenance Friday 2–3 PM PT. You can still access your saved "
         "chats, but live generation will pause."
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
+    assert scored["semantic_constraints_ok"] is True
+    assert scored["passed"] is True
+
+
+def test_rewrite_rejects_negated_maintenance_facts(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "creative_rewrite")
+    response = (
+        "Subject: Maintenance Friday 2–3 PM PT. Saved chats will remain "
+        "unavailable, and live generation will not pause."
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
+
+
+def test_rewrite_does_not_mix_generation_and_saved_chat_sentences(
+    tmp_path: Path,
+) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "creative_rewrite")
+    response = (
+        "Subject: Maintenance Friday 2–3 PM PT. Live generation will pause. "
+        "Your saved chats remain available."
     )
     scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
     assert scored["semantic_constraints_ok"] is True

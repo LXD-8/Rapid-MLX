@@ -739,7 +739,12 @@ def score_task(
             re.IGNORECASE | re.DOTALL,
         )
         payment_spike_is_causal = re.search(
-            r"(?:payment|checkout).{0,80}(?:error|failure).{0,40}22%|22%.{0,40}(?:payment|checkout).{0,80}(?:error|failure)",
+            r"(?:(?:likely|root|primary)?\s*cause.{0,120}(?:payment|checkout).{0,80}(?:error|failure)|(?:payment|checkout).{0,80}(?:error|failure).{0,100}(?:caus|driv|responsib|primary|root))",
+            artifact_text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        contradictory_cause = re.search(
+            r"(?:loss|drop).{0,50}(?:came from|caused by|due to|driven by).{0,50}(?:refund|traffic)",
             artifact_text,
             re.IGNORECASE | re.DOTALL,
         )
@@ -764,19 +769,29 @@ def score_task(
             and deployment_is_connected
             and rollback_is_action
             and not rollback_is_negated
+            and not contradictory_cause
         )
     if task.id == "search_battery":
-        semantic_constraints_ok = bool(
-            re.search(
-                r"\bpine(?: mini)?\b.{0,60}\b(?:lasts?|is|has|offers)\b.{0,30}\blonger\b",
-                final,
-                re.IGNORECASE | re.DOTALL,
-            )
+        pine_is_longer = re.search(
+            r"\bpine(?: mini)?\b.{0,60}\b(?:lasts?|is|has|offers|runs?)\b.{0,30}\blonger\b|\bpine(?: mini)?\b.{0,40}\boutlasts?\b",
+            final,
+            re.IGNORECASE | re.DOTALL,
         )
+        reversed_or_negated = re.search(
+            r"\bpine(?: mini)?\b[^.!?\n]{0,40}\b(?:not|isn't|doesn't)\b[^.!?\n]{0,30}\blonger\b|\bcedar(?: mini)?\b[^.!?\n]{0,60}\b(?:lasts?|is|has|offers|runs?)\b[^.!?\n]{0,30}\blonger\b",
+            final,
+            re.IGNORECASE | re.DOTALL,
+        )
+        semantic_constraints_ok = bool(pine_is_longer and not reversed_or_negated)
     if task.id == "search_release":
+        corrected_claim = re.compile(
+            r"(?:forum|rumor|claim).{0,100}(?:unsupported|not supported|does not support|doesn't support|incompatible|cannot run|can't run).{0,40}(?:wrong|false|incorrect|outdated)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        conclusion = corrected_claim.sub("", final)
         negative_support = re.search(
             r"(?:unsupported|not supported|does not support|doesn't support|incompatible|cannot run|can't run)",
-            final,
+            conclusion,
             re.IGNORECASE,
         )
         affirmative_support = re.search(
@@ -796,7 +811,22 @@ def score_task(
             final,
             re.IGNORECASE | re.DOTALL,
         )
-        semantic_constraints_ok = bool(saved_available and generation_pauses)
+        saved_unavailable = re.search(
+            r"(?:saved chats?.{0,30}(?:unavailable|not\s+available|cannot|can't)|(?:cannot|can't).{0,30}(?:access|view|open).{0,30}saved chats?)",
+            final,
+            re.IGNORECASE | re.DOTALL,
+        )
+        generation_continues = re.search(
+            r"(?:(?:will not|won't|does not|doesn't|not going to)[^.!?\n]{0,20}(?:pause|stop)|(?:live )?generation[^.!?\n]{0,30}(?:continue|keeps? running|remain available))",
+            final,
+            re.IGNORECASE | re.DOTALL,
+        )
+        semantic_constraints_ok = bool(
+            saved_available
+            and generation_pauses
+            and not saved_unavailable
+            and not generation_continues
+        )
     if task.id == "creative_microstory":
         age = r"(?:old|ancient|aging|dusty|forgotten|discarded|obsolete|cracked-screen|19\d\d|20[01]\d)"
         old_mac_mini = re.search(
