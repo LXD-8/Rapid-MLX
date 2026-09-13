@@ -574,6 +574,34 @@ def test_cache_patch_installs_rollback_state_slot():
             patch_arrays_cache_rollback_state()
 
 
+def test_snapshot_rollback_predicate_tracks_the_gated_delta_install():
+    """The public predicate must report the live patch, not a static answer.
+
+    ``gated_delta_snapshot_rollback_installed()`` is what the generator's
+    admission check consults before it will trust an ``ArraysCache`` to be
+    recoverable, so a predicate that answered ``True`` while the chunk-split
+    verify was NOT installed would admit copy-drafts that cannot be rolled
+    back. Toggle the install and require the answer to follow it.
+    """
+    from vllm_mlx.spec_decode.mtp.cache_patch import (
+        _unpatch_for_tests,
+        gated_delta_snapshot_rollback_installed,
+        patch_arrays_cache_rollback_state,
+        patch_gated_delta_net_for_mtp,
+    )
+
+    _unpatch_for_tests()
+    try:
+        assert gated_delta_snapshot_rollback_installed() is False
+        if not patch_gated_delta_net_for_mtp():
+            pytest.skip("GatedDeltaNet unavailable in this mlx-lm")
+        assert gated_delta_snapshot_rollback_installed() is True
+    finally:
+        # Other tests (and the generator import) assume the patch is live.
+        patch_arrays_cache_rollback_state()
+        patch_gated_delta_net_for_mtp()
+
+
 def test_cache_patch_is_idempotent():
     """Second call returns False — already-installed is not an error."""
     from vllm_mlx.spec_decode.mtp.cache_patch import (
