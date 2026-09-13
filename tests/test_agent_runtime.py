@@ -68,6 +68,11 @@ def test_tool_arguments_are_json_only_at_the_wire_boundary():
         AgentToolCall(id="call-1", name="read_file", arguments={"bad": float("nan")})
 
 
+def test_tool_risk_is_required_at_registry_boundary():
+    with pytest.raises(ValidationError, match="risk"):
+        ToolSpec(name="unclassified")
+
+
 def test_successful_tool_round_has_stable_events_and_roundtrips():
     runtime = _runtime()
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read the report")
@@ -108,7 +113,9 @@ def test_successful_tool_round_has_stable_events_and_roundtrips():
 def test_minicpm_rejects_an_oversized_tool_surface():
     runtime = _runtime()
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Do the task")
-    tools = [ToolSpec(name=f"tool_{index}") for index in range(7)]
+    tools = [
+        ToolSpec(name=f"tool_{index}", risk=ToolRisk.READ_ONLY) for index in range(7)
+    ]
 
     with pytest.raises(AgentRuntimeError, match="at most 6 visible tools"):
         runtime.request_model(run, tools)
@@ -236,6 +243,35 @@ def test_stale_approval_does_not_authorize_the_pending_call():
     assert run.pending_call.id == "current"
 
 
+def test_restore_requires_matching_approval_for_external_side_effect():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
+    runtime.request_model(run, [SEND])
+    runtime.accept_model_turn(
+        run,
+        AgentModelTurn(tool_calls=[AgentToolCall(id="send-1", name="send_message")]),
+    )
+    payload = run.model_dump(mode="json")
+    payload["status"] = "awaiting_tool_result"
+
+    with pytest.raises(ValidationError, match="requires matching approved"):
+        AgentRun.model_validate(payload)
+
+
+def test_approved_external_side_effect_roundtrips_while_awaiting_result():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
+    runtime.request_model(run, [SEND])
+    runtime.accept_model_turn(
+        run,
+        AgentModelTurn(tool_calls=[AgentToolCall(id="send-1", name="send_message")]),
+    )
+    runtime.resolve_approval(run, call_id="send-1", approved=True)
+
+    restored = AgentRun.model_validate_json(run.model_dump_json())
+    assert restored.model_dump(mode="json") == run.model_dump(mode="json")
+
+
 def test_mismatched_tool_result_does_not_advance_the_run():
     runtime = _runtime()
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read the report")
@@ -285,7 +321,7 @@ def test_tool_argument_values_are_transient_not_persisted():
     serialized = run.model_dump_json()
     assert secret not in serialized
     assert run.pending_call is not None
-    assert run.pending_call.arguments == {}
+    assert "arguments" not in run.pending_call.model_dump(mode="json")
     assert output is not None
     assert output.call is not None
     assert output.call.arguments["token"] == secret
@@ -355,6 +391,29 @@ def test_repeated_identical_call_forces_tools_off_instead_of_looping():
     assert run.status is AgentRunStatus.COMPLETED
 
 
+def test_repeat_counters_are_isolated_for_duplicate_public_run_ids():
+    profile = AgentProfile(
+        name="strict-repeat",
+        max_visible_tools=1,
+        max_tool_rounds=4,
+        repeated_call_limit=1,
+    )
+    runtime = _runtime()
+    first = runtime.create_run(
+        model="test", goal="First", run_id="same", profile=profile
+    )
+    second = runtime.create_run(
+        model="test", goal="Second", run_id="same", profile=profile
+    )
+
+    for run in (first, second):
+        runtime.request_model(run, [READ])
+        output = runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
+        assert output is not None
+        assert output.call is not None
+        assert output.observation is None
+
+
 def test_tool_budget_reserves_a_tools_disabled_final_synthesis():
     profile = AgentProfile(
         name="one-round",
@@ -412,6 +471,68 @@ def test_restored_run_rejects_noncontiguous_event_sequences():
         AgentRun.model_validate(payload)
 
 
+def test_restored_run_rejects_malformed_tool_event_metadata():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
+    runtime.request_model(run, [READ])
+    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
+    payload = run.model_dump(mode="json")
+    payload["events"][-1]["data"]["call"] = "not-an-object"
+
+    with pytest.raises(ValidationError, match="must contain a call object"):
+        AgentRun.model_validate(payload)
+
+
+def test_restored_run_rejects_raw_pending_arguments():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
+    runtime.request_model(run, [READ])
+    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call(path="a.md")]))
+    payload = run.model_dump(mode="json")
+    payload["pending_call"]["arguments"] = {"token": "must-not-persist"}
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        AgentRun.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("model_turns", 0, "model_turns does not match"),
+        ("tool_rounds", 0, "tool_rounds does not match"),
+        ("used_call_ids", [], "used_call_ids does not match"),
+        ("status", "completed", "inactive run cannot retain"),
+    ],
+)
+def test_restored_run_rejects_state_that_disagrees_with_events(field, value, message):
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
+    runtime.request_model(run, [READ])
+    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
+    payload = run.model_dump(mode="json")
+    payload[field] = value
+
+    with pytest.raises(ValidationError, match=message):
+        AgentRun.model_validate(payload)
+
+
+def test_restored_run_rejects_a_weakened_model_profile():
+    run = _runtime().create_run(model="minicpm5-2b-4bit", goal="Read")
+    payload = run.model_dump(mode="json")
+    payload["profile"]["max_visible_tools"] = 7
+
+    with pytest.raises(ValidationError, match="weakens required model limits"):
+        AgentRun.model_validate(payload)
+
+
+def test_transition_rejects_a_run_not_created_by_runtime():
+    profile = resolve_agent_profile("minicpm5-2b-4bit")
+    run = AgentRun(model="minicpm5-2b-4bit", goal="Read", profile=profile)
+
+    with pytest.raises(AgentRuntimeError, match="not created by AgentRuntime"):
+        _runtime().request_model(run, [READ])
+
+
 def test_event_history_and_payload_are_immutable_to_consumers():
     run = _runtime().create_run(model="minicpm5-2b-4bit", goal="Read")
     event = run.events[0]
@@ -435,8 +556,6 @@ def test_reducer_safety_collections_are_immutable_to_consumers():
         run.visible_tools = (*run.visible_tools, SEND)
     with pytest.raises(ValidationError, match="Field is frozen"):
         run.used_call_ids = ()
-    with pytest.raises(ValidationError, match="Field is frozen"):
-        run.call_counts = ()
 
     output = runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
     assert run.pending_risk is ToolRisk.READ_ONLY

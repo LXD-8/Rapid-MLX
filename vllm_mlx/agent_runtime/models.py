@@ -80,7 +80,7 @@ class ToolSpec(_WireModel):
     name: StrictStr = Field(min_length=1, max_length=128)
     description: StrictStr = Field(default="", max_length=4096)
     parameters_json: StrictStr = Field(default="{}", repr=False)
-    risk: ToolRisk = ToolRisk.READ_ONLY
+    risk: ToolRisk
 
     @field_validator("parameters_json")
     @classmethod
@@ -141,6 +141,15 @@ class AgentToolCall(_WireModel):
     id: StrictStr = Field(min_length=1, max_length=256)
     name: StrictStr = Field(min_length=1, max_length=128)
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class RedactedPendingCall(_WireModel):
+    """Persistent call identity; raw argument values are adapter-owned."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: StrictStr = Field(min_length=1, max_length=256)
+    name: StrictStr = Field(min_length=1, max_length=128)
 
 
 class AgentToolResult(_WireModel):
@@ -238,12 +247,8 @@ class AgentRun(_WireModel):
     tool_rounds: StrictInt = Field(default=0, ge=0)
     final_synthesis: StrictBool = False
     visible_tools: tuple[ToolSpec, ...] = Field(default_factory=tuple, frozen=True)
-    pending_call: AgentToolCall | None = Field(default=None, frozen=True)
+    pending_call: RedactedPendingCall | None = Field(default=None, frozen=True)
     pending_risk: ToolRisk | None = Field(default=None, frozen=True)
-    call_counts: tuple[tuple[StrictStr, StrictInt], ...] = Field(
-        default_factory=tuple,
-        frozen=True,
-    )
     used_call_ids: tuple[StrictStr, ...] = Field(default_factory=tuple, frozen=True)
     final_content: StrictStr | None = Field(default=None, max_length=262_144)
     failure_code: StrictStr | None = Field(default=None, max_length=128)
@@ -257,10 +262,180 @@ class AgentRun(_WireModel):
             raise ValueError("event sequences must be contiguous and start at 1")
         if len(self.used_call_ids) != len(set(self.used_call_ids)):
             raise ValueError("used tool call IDs must be unique")
-        call_count_names = [fingerprint for fingerprint, _ in self.call_counts]
-        if len(call_count_names) != len(set(call_count_names)):
-            raise ValueError("tool call fingerprints must be unique")
+        if self.events:
+            self._validate_restored_state()
         return self
+
+    def _validate_restored_state(self) -> None:
+        from .profiles import resolve_agent_profile
+
+        created = self.events[0]
+        if created.type != "run.created":
+            raise ValueError("event history must start with run.created")
+        created_data = created.data
+        if created_data.get("model") != self.model:
+            raise ValueError("run model does not match run.created")
+        if created_data.get("profile") != self.profile.name:
+            raise ValueError("run profile does not match run.created")
+
+        required = resolve_agent_profile(self.model)
+        if (
+            self.profile.max_visible_tools > required.max_visible_tools
+            or self.profile.max_tool_rounds > required.max_tool_rounds
+            or self.profile.repeated_call_limit > required.repeated_call_limit
+            or (
+                required.attach_ledger_to_tool_results
+                and not self.profile.attach_ledger_to_tool_results
+            )
+        ):
+            raise ValueError("stored profile weakens required model limits")
+
+        model_requests = [
+            event for event in self.events if event.type == "model.requested"
+        ]
+        tool_requests = [
+            event for event in self.events if event.type == "tool.requested"
+        ]
+        requested_ids_list: list[str] = []
+        for event in tool_requests:
+            call_data = event.data.get("call")
+            if not isinstance(call_data, dict):
+                raise ValueError("tool.requested must contain a call object")
+            call_id = call_data.get("id")
+            call_name = call_data.get("name")
+            argument_names = call_data.get("argument_names")
+            if (
+                not isinstance(call_id, str)
+                or not isinstance(call_name, str)
+                or not isinstance(argument_names, list)
+                or not all(isinstance(name, str) for name in argument_names)
+            ):
+                raise ValueError("tool.requested contains malformed call metadata")
+            if event.data.get("risk") not in {risk.value for risk in ToolRisk}:
+                raise ValueError("tool.requested contains an invalid risk")
+            requested_ids_list.append(call_id)
+        requested_ids = tuple(requested_ids_list)
+        if self.model_turns != len(model_requests):
+            raise ValueError("model_turns does not match event history")
+        if self.tool_rounds != len(tool_requests):
+            raise ValueError("tool_rounds does not match event history")
+        if self.tool_rounds > self.profile.max_tool_rounds:
+            raise ValueError("tool_rounds exceeds the stored profile limit")
+        if self.used_call_ids != requested_ids:
+            raise ValueError("used_call_ids does not match event history")
+        if self.final_synthesis != any(
+            event.type == "synthesis.required" for event in self.events
+        ):
+            raise ValueError("final_synthesis does not match event history")
+
+        active_policy = self.status in {
+            AgentRunStatus.AWAITING_MODEL,
+            AgentRunStatus.AWAITING_APPROVAL,
+            AgentRunStatus.AWAITING_TOOL_RESULT,
+        }
+        if active_policy:
+            if not model_requests:
+                raise ValueError("active run requires a model request")
+            expected_tools = model_requests[-1].data.get("tools")
+            actual_tools = [tool.model_dump(mode="json") for tool in self.visible_tools]
+            if expected_tools != actual_tools:
+                raise ValueError("visible tool policy does not match event history")
+            if len(self.visible_tools) > self.profile.max_visible_tools:
+                raise ValueError("visible tool policy exceeds the profile limit")
+        elif self.visible_tools:
+            raise ValueError("inactive run cannot retain a visible tool policy")
+
+        pending_status = self.status in {
+            AgentRunStatus.AWAITING_APPROVAL,
+            AgentRunStatus.AWAITING_TOOL_RESULT,
+        }
+        if pending_status:
+            if (
+                self.pending_call is None
+                or self.pending_risk is None
+                or not tool_requests
+            ):
+                raise ValueError("pending status requires a pending call and risk")
+            latest = tool_requests[-1].data
+            latest_call = latest.get("call")
+            if not isinstance(latest_call, dict):
+                raise ValueError("latest tool request has malformed call metadata")
+            if latest_call.get("id") != self.pending_call.id:
+                raise ValueError("pending call does not match latest tool request")
+            if latest_call.get("name") != self.pending_call.name:
+                raise ValueError("pending tool does not match latest tool request")
+            if latest.get("risk") != self.pending_risk.value:
+                raise ValueError("pending risk does not match latest tool request")
+            completed_ids: set[str] = set()
+            for event in self.events:
+                if event.type != "tool.completed":
+                    continue
+                result_data = event.data.get("result")
+                if not isinstance(result_data, dict) or not isinstance(
+                    result_data.get("call_id"), str
+                ):
+                    raise ValueError(
+                        "tool.completed contains malformed result metadata"
+                    )
+                completed_ids.add(result_data["call_id"])
+            if self.pending_call.id in completed_ids:
+                raise ValueError("pending call is already completed")
+            if (
+                self.status is AgentRunStatus.AWAITING_TOOL_RESULT
+                and self.pending_risk.requires_approval
+            ):
+                resolution = self.events[-1]
+                resolution_data = resolution.data
+                if (
+                    resolution.type != "approval.resolved"
+                    or resolution_data.get("call_id") != self.pending_call.id
+                    or resolution_data.get("approved") is not True
+                ):
+                    raise ValueError(
+                        "external side effect requires matching approved resolution"
+                    )
+        elif self.pending_call is not None or self.pending_risk is not None:
+            raise ValueError("non-pending status cannot retain a pending call")
+
+        expected_last = {
+            AgentRunStatus.AWAITING_MODEL: "model.requested",
+            AgentRunStatus.AWAITING_APPROVAL: "approval.required",
+            AgentRunStatus.COMPLETED: "run.completed",
+            AgentRunStatus.FAILED: "run.failed",
+            AgentRunStatus.CANCELLED: "run.cancelled",
+        }.get(self.status)
+        if expected_last is not None and self.events[-1].type != expected_last:
+            raise ValueError(f"{self.status.value} run has inconsistent final event")
+        if self.status is AgentRunStatus.AWAITING_TOOL_RESULT and self.events[
+            -1
+        ].type not in {
+            "tool.requested",
+            "approval.resolved",
+        }:
+            raise ValueError("awaiting_tool_result run has inconsistent final event")
+        if self.status is AgentRunStatus.READY and self.events[-1].type not in {
+            "run.created",
+            "tool.completed",
+            "synthesis.required",
+        }:
+            raise ValueError("ready run has inconsistent final event")
+
+        if self.status is AgentRunStatus.COMPLETED:
+            if (
+                self.final_content is None
+                or self.events[-1].data.get("content") != self.final_content
+            ):
+                raise ValueError("completed run must retain matching final content")
+        elif self.final_content is not None:
+            raise ValueError("non-completed run cannot retain final content")
+        if self.status is AgentRunStatus.FAILED:
+            if (
+                self.failure_code is None
+                or self.events[-1].data.get("code") != self.failure_code
+            ):
+                raise ValueError("failed run must retain matching failure code")
+        elif self.failure_code is not None:
+            raise ValueError("non-failed run cannot retain a failure code")
 
     def append_event(
         self,

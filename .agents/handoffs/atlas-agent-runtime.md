@@ -19,7 +19,11 @@
   events retain size, digest, error state, and an optional producer-authored
   safe summary.
 - Call IDs are single-use, approvals match the exact pending ID, and restored
-  event histories must be contiguous from sequence one.
+  event histories must be contiguous from sequence one. Restore also
+  cross-checks the model profile, budgets, counters, active policy, pending
+  identity/risk, and terminal data against the immutable event history.
+- Tool risk is mandatory at the registry boundary. Repeat fingerprints are
+  held only inside the live runtime and are never serialized.
 - MiniCPM5-2B defaults are six visible tools, eight tool rounds, one call per
   model turn, and two identical calls before forced final synthesis.
 - Focused unit tests, Ruff, and focused mypy pass.

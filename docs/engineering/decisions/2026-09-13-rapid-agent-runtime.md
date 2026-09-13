@@ -56,19 +56,23 @@ closed. This keeps policy identical without forcing macOS-only tools into Python
 2. The MiniCPM5-2B profile exposes at most six tools and permits eight tool
    rounds. P0 accepts one tool call per model turn for every profile.
 3. Tools not advertised for that exact turn fail closed.
+   Registry adapters must classify every tool explicitly; there is no
+   permissive default risk.
 4. External side effects pause for an explicit approval result tied to the
    exact pending call ID; a call ID may appear only once in a run.
 5. Repeating the same tool and arguments more than twice disables tools and
    forces final synthesis.
 6. Tool-round exhaustion reserves one tools-disabled final synthesis turn.
 7. Every transition appends a versioned, monotonically sequenced event; restore
-   rejects duplicate, gapped, or out-of-order histories.
+   rejects duplicate, gapped, or out-of-order histories and state/profile /
+   counter values that disagree with that history.
 8. Persistent state contains goal, actions, result metadata/safe summaries,
    counters, and final text; never raw tool payload values, model reasoning,
    credentials, screenshots, or clipboard contents. Request events retain only
    call identity and argument names. The adapter passes raw call arguments and
    tool results only to immediate execution/model turns; credentials must be
    resolved from opaque references out of band.
+   Repeat fingerprints are runtime-local and are never serialized.
 9. Host-generated denial and loop-guard observations are returned transiently
    to the adapter, so every model tool call receives a matching tool result.
 10. Tool results carry a short host-authored ledger block. It is not appended as
