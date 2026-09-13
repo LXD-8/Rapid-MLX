@@ -767,6 +767,11 @@ def score_task(
             artifact_text,
             re.IGNORECASE | re.DOTALL,
         )
+        payment_cause_is_negated = re.search(
+            r"(?:payment|checkout).{0,80}(?:error|failure).{0,40}(?:was|is|were|are)?\s*(?:not|never).{0,20}(?:cause|caus|driv|responsib)",
+            artifact_text,
+            re.IGNORECASE | re.DOTALL,
+        )
         deployment_is_connected = re.search(
             r"(?:4\.8\.0.{0,80}(?:cause|trigger|introduc|after|coincid|likely|payment|error)|(?:cause|trigger|introduc|after|coincid|likely|payment|error).{0,80}4\.8\.0)",
             artifact_text,
@@ -789,6 +794,7 @@ def score_task(
             and rollback_is_action
             and not rollback_is_negated
             and not contradictory_cause
+            and not payment_cause_is_negated
         )
     if task.id == "search_battery":
         pine_is_longer = re.search(
@@ -797,7 +803,7 @@ def score_task(
             re.IGNORECASE | re.DOTALL,
         )
         reversed_or_negated = re.search(
-            r"\bpine(?: mini)?\b[^.!?\n]{0,40}\b(?:not|isn't|doesn't)\b[^.!?\n]{0,30}\blonger\b|\bcedar(?: mini)?\b[^.!?\n]{0,60}\b(?:lasts?|is|has|offers|runs?)\b[^.!?\n]{0,30}\blonger\b",
+            r"\bpine(?: mini)?\b[^.!?\n]{0,40}\b(?:not|isn't|doesn't)\b[^.!?\n]{0,30}\blonger\b|\bcedar(?: mini)?\b[^.!?\n]{0,60}(?:\b(?:lasts?|is|has|offers|runs?)\b[^.!?\n]{0,30}\blonger\b|\boutlasts?\b)",
             final,
             re.IGNORECASE | re.DOTALL,
         )
@@ -838,7 +844,7 @@ def score_task(
             re.IGNORECASE | re.DOTALL,
         )
         saved_unavailable = re.search(
-            r"(?:saved chats?.{0,30}(?:unavailable|not\s+available|aren't\s+available|isn't\s+available|cannot|can't)|(?:cannot|can't).{0,30}(?:access|view|open).{0,30}saved chats?)",
+            r"(?:saved chats?.{0,30}(?:unavailable|not\s+available|no\s+longer\s+available|aren't\s+available|isn't\s+available|cannot|can't)|(?:cannot|can't).{0,30}(?:access|view|open).{0,30}saved chats?)",
             final,
             re.IGNORECASE | re.DOTALL,
         )

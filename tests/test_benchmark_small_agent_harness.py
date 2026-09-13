@@ -410,6 +410,24 @@ def test_battery_rejects_reversed_or_negated_comparison(tmp_path: Path) -> None:
     assert scored["score"] < 1.0
 
 
+def test_battery_rejects_cedar_outlasting_pine(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "search_battery")
+    history = [
+        {"name": "search_web", "ok": True, "arguments": {"query": "battery"}},
+        *[
+            {"name": "open_url", "ok": True, "arguments": {"url": url}}
+            for url in task.pages
+        ],
+    ]
+    final = (
+        "Pine Mini is longer by 5 hours, but Cedar Mini actually outlasts it. "
+        "https://bench.test/cedar https://bench.test/pine"
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
+
+
 def test_battery_requires_hours_for_the_numeric_gap(tmp_path: Path) -> None:
     task = next(task for task in BENCHMARK.TASKS if task.id == "search_battery")
     history = [
@@ -570,6 +588,23 @@ def test_incident_rejects_contradictory_cause_and_action(tmp_path: Path) -> None
     assert scored["passed"] is False
 
 
+def test_incident_rejects_negated_payment_cause(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "organize_incident")
+    (tmp_path / "incident.md").write_text(
+        "The $10,000 revenue loss followed payment-sdk 4.8.0. The payment "
+        "checkout error at 22% was not the cause. Corrective action: rollback 4.8.0."
+    )
+    history = [
+        {"name": "read_file", "ok": True, "arguments": {"path": path}}
+        for path in task.required_reads
+    ] + [
+        {"name": "write_file", "ok": True, "arguments": {"path": "incident.md"}}
+    ]
+    scored = BENCHMARK.score_task(task, tmp_path, "done", history, {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
+
+
 def test_incident_accepts_causal_evidence_and_corrective_action(tmp_path: Path) -> None:
     task = next(task for task in BENCHMARK.TASKS if task.id == "organize_incident")
     (tmp_path / "incident.md").write_text(
@@ -681,6 +716,17 @@ def test_rewrite_rejects_contracted_maintenance_negations(tmp_path: Path) -> Non
     response = (
         "Subject: Maintenance Friday 2–3 PM PT. Saved chats aren't available, "
         "and live generation isn't paused."
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
+
+
+def test_rewrite_rejects_no_longer_available_saved_chats(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "creative_rewrite")
+    response = (
+        "Subject: Maintenance Friday 2–3 PM PT. Saved chats are no longer "
+        "available, and live generation will pause."
     )
     scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
     assert scored["semantic_constraints_ok"] is False
