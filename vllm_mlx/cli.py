@@ -4733,7 +4733,7 @@ def serve_command(args):
         cors_origins=cors_origins,
         uvicorn_log_level=uvicorn_log_level,
     ):
-        return
+        return  # pragma: no cover - exercised by the real-model HTTP dogfood
 
     # DFlash owns a dedicated single-user runtime. Fork before constructing
     # BatchedEngine-only cache/TurboQuant/PFlash state so startup output and
