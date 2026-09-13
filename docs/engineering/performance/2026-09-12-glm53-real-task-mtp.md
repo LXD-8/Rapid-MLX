@@ -207,6 +207,43 @@ Two narrowly scoped Rapid spikes did not clear the performance gate:
   difference was 1.5259e-5 and the final recurrent cache was not bit-identical.
   The current kernel therefore does not reproduce the older claim of a
   bit-exact 30% win; no slicing patch was proposed.
+- Four-row blocking in the vector-gated recurrent Metal kernel was bit-exact
+  and strong in isolation: 1.219x at 512 tokens, 1.313x at 2,048, and 1.789x
+  at 8,192. On the complete model it improved the 3,126-token prefill by only
+  1.2% to 1.6%, while repeated full-task runs did not establish a net request
+  throughput win under the host's concurrent CPU load. Restricting it to
+  prefill preserved all task outputs but did not clear the product gate, so
+  the spike was rejected rather than exposing a new runtime knob.
+
+### Accepted gate/up storage fusion
+
+One backbone reduction did clear the gate and is proposed upstream as
+mlx-vlm PR #2234. GLM's eight routed experts previously read the same hidden
+vector and routing indices through separate gate and up gathered QMMs. The
+candidate stores their affine Q4 tensors gate-first in one
+`QuantizedSwitchLinear`, performs one gathered projection, and then splits the
+unchanged results before LimitedSwiGLU. Both raw per-expert target checkpoints
+and older pre-stacked MTP sidecars migrate at load time.
+
+At production geometry (H=4,096, I=2,048, 288 experts, top-8), the complete
+routed SwitchGLU call improved from 0.583 to 0.532 ms, or 1.086x. A real
+checkpoint sparse layer measured 1.082x, 1.057x, 1.042x, 1.067x, and 1.018x at
+T=1, 2, 4, 8, and 16 respectively. Every tested projection and layer output
+was bit-exact.
+
+Three warm full-model runs retained all 18/18 task passes and byte-identical
+reasoning/final strings. Median server decode gains by category were +2.8%,
++3.6%, +2.5%, +2.2%, +2.7%, and +1.5%. The median per-category decode gain
+was 2.65%; the median paired end-to-end category gain was 2.49%, and the
+median of category medians moved from 30.132 to 31.156 tok/s (1.034x). Peak
+Metal memory remained 188.674 GB.
+
+The first load-time implementation concatenated each expert separately and
+was killed on first materialization. The accepted implementation instead uses
+one flat stack and a zero-copy reshape, eliminating thousands of intermediate
+expressions. The existing 3.9 GB Q4 sidecar subsequently loaded with
+`strict=True`, and the 184 GB target completed the full qualification without
+exceeding the prior suite's peak.
 
 The 184-189 GB working set also makes host health part of the benchmark gate.
 A follow-up stock run produced only 0.382 tok/s while the 256 GiB host was
@@ -285,7 +322,7 @@ file-size, process-count, descriptor, and wall-time limits.
 
 The transaction and safe fallback now exist upstream. Atlas should not vendor a
 partial copy or point a release at an untagged Git commit. Once mlx-vlm ships a
-release containing #2231, #2232, and #2233, update Rapid's pin, run this exact
+release containing #2231, #2232, #2233, and #2234, update Rapid's pin, run this exact
 six-task gate through the Rapid server, and only then enable GLM MTP. The next
 performance investigation should target exact verify/backbone dispatch cost.
 The same-width result shows that deeper drafting is not the main competitor
