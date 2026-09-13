@@ -165,10 +165,23 @@ def test_projected_admission_requires_exact_shape_and_dtype():
     )
     assert not fused._projected_eligible(layer, qkv[..., :-1], z, gates, gates, cache)
 
+    class BrokenLayer:
+        @property
+        def conv1d(self):
+            raise OSError("metadata unavailable")
+
+    assert not fused._projected_eligible(BrokenLayer(), qkv, z, gates, gates, cache)
+
 
 def test_install_honors_kill_switch(monkeypatch):
     monkeypatch.setenv("RAPID_MLX_QWEN35_FUSED_GDN_DECODE", "0")
     assert fused.install_qwen35_fused_gdn_decode(object()) == 0
+
+
+def test_install_tolerates_missing_text_runtime(monkeypatch):
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.qwen3_5", None)
+    model = SimpleNamespace(named_modules=lambda: iter(()))
+    assert fused.install_qwen35_fused_gdn_decode(model) == 0
 
 
 def test_install_ignores_non_module_placeholder():
@@ -397,6 +410,33 @@ def test_patched_call_falls_back_before_cache_mutation_on_projection_error(monke
         gdn_in_proj_fusion,
         "_fused_projections",
         lambda *_: (_ for _ in ()).throw(OSError("projection unavailable")),
+    )
+    fused._patch_class(FakeGdn)
+
+    assert layer(mx.zeros((1, 1, 2048), dtype=mx.bfloat16), cache=cache) == "stock"
+    assert cache[0] is original_conv
+    assert cache[1] is original_state
+    assert cache.advanced == 0
+
+
+def test_patched_call_falls_back_when_projected_values_fail_admission(monkeypatch):
+    class FakeGdn:
+        def __call__(self, inputs, mask=None, cache=None):
+            return "stock"
+
+    layer = FakeGdn()
+    for name, value in vars(_layer()).items():
+        setattr(layer, name, value)
+    layer._rapid_qwen35_fused_gdn_threadgroup_y = 32
+    cache = _Cache()
+    original_conv, original_state = cache[0], cache[1]
+    bad_qkv = mx.zeros((1, 1, fused._CONV_DIM - 1), dtype=mx.bfloat16)
+    z = mx.zeros((1, 1, fused._VALUE_DIM), dtype=mx.bfloat16)
+    gates = mx.zeros((1, 1, fused._NUM_VALUE_HEADS), dtype=mx.bfloat16)
+    monkeypatch.setattr(
+        gdn_in_proj_fusion,
+        "_fused_projections",
+        lambda *_: (bad_qkv, z, gates, gates),
     )
     fused._patch_class(FakeGdn)
 
