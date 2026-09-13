@@ -13,10 +13,10 @@
   authentication, and Chat/Responses APIs.
 - The P0 kernel adds no dependency or process. It stores a complete immutable
   model-profile snapshot, snapshots the exact per-turn tool policy, and emits a
-  versioned append-only event stream.
+  versioned append-only event stream writable only by the reducer.
 - Raw call arguments and tool-result content are transient and never enter that
   event stream. Request events retain call identity and argument names; result
-  events retain size, digest, error state, and an optional producer-authored
+  events retain size, execution/error state, and an optional producer-authored
   safe summary.
 - Call IDs are single-use, approvals match the exact pending ID, and restored
   event histories must be contiguous from sequence one. Restore also
@@ -24,7 +24,8 @@
   identity/risk, and terminal data against the immutable event history.
 - Tool risk is mandatory at the registry boundary. Repeat fingerprints are
   held only inside the live runtime and are never serialized. Restored runs
-  with prior tool history therefore force a tools-off synthesis turn.
+  with prior tool history therefore force a tools-off synthesis turn. Weak
+  tracking references prevent abandoned runs from being retained in memory.
 - Result metadata distinguishes executed calls from denied/loop-blocked calls;
   restore replays every external action and requires a prior exact approval for
   every executed side effect. Approval input is a strict Python boolean.

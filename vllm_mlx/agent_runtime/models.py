@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import time
 import uuid
 from enum import Enum
 from typing import Literal, cast
@@ -270,13 +269,55 @@ class AgentRun(_WireModel):
     def _validate_restored_state(self) -> None:
         from .profiles import resolve_agent_profile
 
+        exact_event_keys = {
+            "run.created": {"model", "profile"},
+            "model.requested": {
+                "model_turn",
+                "visible_tools",
+                "tools",
+                "final_synthesis",
+            },
+            "tool.requested": {"call", "risk"},
+            "approval.required": {"call_id", "tool", "risk"},
+            "approval.resolved": {"call_id", "approved"},
+            "run.completed": {"content"},
+            "run.failed": {"code"},
+            "run.cancelled": set(),
+        }
+        for event in self.events:
+            data = event.data
+            expected = exact_event_keys.get(event.type)
+            if expected is not None and set(data) != expected:
+                raise ValueError(f"{event.type} contains unexpected payload fields")
+            if event.type == "synthesis.required" and (
+                "reason" not in data or not set(data).issubset({"reason", "tool"})
+            ):
+                raise ValueError("synthesis.required contains invalid payload fields")
+            if event.type == "tool.completed":
+                if not set(data).issubset({"result", "ledger"}) or "result" not in data:
+                    raise ValueError("tool.completed contains invalid payload fields")
+                result = data["result"]
+                if not isinstance(result, dict):
+                    raise ValueError("tool.completed contains invalid result fields")
+                result_keys = set(result)
+                base_result_keys = {
+                    "call_id",
+                    "is_error",
+                    "executed",
+                    "content_bytes",
+                }
+                if result_keys != base_result_keys and result_keys != (
+                    base_result_keys | {"safe_summary"}
+                ):
+                    raise ValueError("tool.completed contains invalid result fields")
+
         created = self.events[0]
         if created.type != "run.created":
             raise ValueError("event history must start with run.created")
         created_data = created.data
         if created_data.get("model") != self.model:
             raise ValueError("run model does not match run.created")
-        if created_data.get("profile") != self.profile.name:
+        if created_data.get("profile") != self.profile.model_dump(mode="json"):
             raise ValueError("run profile does not match run.created")
 
         required = resolve_agent_profile(self.model)
@@ -298,25 +339,6 @@ class AgentRun(_WireModel):
             event for event in self.events if event.type == "tool.requested"
         ]
         requested_ids_list: list[str] = []
-        for event in tool_requests:
-            call_data = event.data.get("call")
-            if not isinstance(call_data, dict):
-                raise ValueError("tool.requested must contain a call object")
-            call_id = call_data.get("id")
-            call_name = call_data.get("name")
-            argument_names = call_data.get("argument_names")
-            if (
-                not isinstance(call_id, str)
-                or not isinstance(call_name, str)
-                or not isinstance(argument_names, list)
-                or not all(isinstance(name, str) for name in argument_names)
-            ):
-                raise ValueError("tool.requested contains malformed call metadata")
-            if event.data.get("risk") not in {risk.value for risk in ToolRisk}:
-                raise ValueError("tool.requested contains an invalid risk")
-            requested_ids_list.append(call_id)
-        requested_ids = tuple(requested_ids_list)
-
         request_risks: dict[str, ToolRisk] = {}
         approval_required: set[str] = set()
         approval_resolved: dict[str, bool] = {}
@@ -325,11 +347,27 @@ class AgentRun(_WireModel):
             data = event.data
             if event.type == "tool.requested":
                 call_data = data.get("call")
-                if not isinstance(call_data, dict) or not isinstance(
-                    call_data.get("id"), str
+                if not isinstance(call_data, dict):
+                    raise ValueError("tool.requested must contain a call object")
+                call_id = call_data.get("id")
+                call_name = call_data.get("name")
+                argument_names = call_data.get("argument_names")
+                if (
+                    set(call_data) != {"id", "name", "argument_names"}
+                    or not isinstance(call_id, str)
+                    or not isinstance(call_name, str)
+                    or not isinstance(argument_names, list)
+                    or not all(isinstance(name, str) for name in argument_names)
                 ):
                     raise ValueError("tool.requested contains malformed call metadata")
-                request_risks[call_data["id"]] = ToolRisk(data["risk"])
+                try:
+                    risk = ToolRisk(data.get("risk"))
+                except ValueError as exc:
+                    raise ValueError("tool.requested contains an invalid risk") from exc
+                if call_id in request_risks:
+                    raise ValueError("tool call IDs must be unique")
+                requested_ids_list.append(call_id)
+                request_risks[call_id] = risk
             elif event.type == "approval.required":
                 call_id = data.get("call_id")
                 if (
@@ -376,6 +414,7 @@ class AgentRun(_WireModel):
                     raise ValueError(
                         "executed external call requires matching approval"
                     )
+        requested_ids = tuple(requested_ids_list)
         if self.model_turns != len(model_requests):
             raise ValueError("model_turns does not match event history")
         if self.tool_rounds != len(tool_requests):
@@ -485,25 +524,3 @@ class AgentRun(_WireModel):
                 raise ValueError("failed run must retain matching failure code")
         elif self.failure_code is not None:
             raise ValueError("non-failed run cannot retain a failure code")
-
-    def append_event(
-        self,
-        event_type: AgentEventType,
-        data: dict[str, JsonValue] | None = None,
-        *,
-        now: float | None = None,
-    ) -> AgentEvent:
-        event = AgentEvent(
-            sequence=len(self.events) + 1,
-            type=event_type,
-            created_at=time.time() if now is None else now,
-            payload_json=json.dumps(
-                data or {},
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
-        )
-        object.__setattr__(self, "events", (*self.events, event))
-        return event

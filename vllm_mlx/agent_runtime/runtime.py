@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from pydantic import JsonValue
 
 from .models import (
+    AgentEvent,
+    AgentEventType,
     AgentModelTurn,
     AgentProfile,
     AgentRun,
@@ -33,6 +36,31 @@ class AgentRuntimeOutput:
 
     call: AgentToolCall | None = None
     observation: AgentToolResult | None = None
+
+
+def _append_event(
+    run: AgentRun,
+    event_type: AgentEventType,
+    data: dict[str, JsonValue] | None = None,
+    *,
+    now: float,
+) -> AgentEvent:
+    """Reducer-internal event writer; callers cannot append arbitrary payloads."""
+
+    event = AgentEvent(
+        sequence=len(run.events) + 1,
+        type=event_type,
+        created_at=now,
+        payload_json=json.dumps(
+            data or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ),
+    )
+    object.__setattr__(run, "events", (*run.events, event))
+    return event
 
 
 def _call_fingerprint(call: AgentToolCall) -> str:
@@ -68,9 +96,25 @@ class AgentRuntime:
         import time
 
         self._clock = clock or time.time
-        # Key by live object identity, not caller-provided run ID. The strong
-        # reference prevents id() reuse until terminal cleanup.
-        self._call_counts_by_run: dict[int, tuple[AgentRun, dict[str, int]]] = {}
+        self._call_counts_by_run: dict[
+            int, tuple[weakref.ReferenceType[AgentRun], dict[str, int]]
+        ] = {}
+
+    def _is_tracked(self, run: AgentRun) -> bool:
+        entry = self._call_counts_by_run.get(id(run))
+        return entry is not None and entry[0]() is run
+
+    def _track_run(self, run: AgentRun) -> dict[str, int]:
+        key = id(run)
+
+        def discard(reference: weakref.ReferenceType[AgentRun]) -> None:
+            current = self._call_counts_by_run.get(key)
+            if current is not None and current[0] is reference:
+                self._call_counts_by_run.pop(key, None)
+
+        counts: dict[str, int] = {}
+        self._call_counts_by_run[key] = (weakref.ref(run, discard), counts)
+        return counts
 
     def create_run(
         self,
@@ -99,12 +143,13 @@ class AgentRuntime:
             if run_id is None
             else AgentRun(id=run_id, model=model, goal=goal, profile=selected)
         )
-        run.append_event(
+        _append_event(
+            run,
             "run.created",
-            {"model": model, "profile": selected.name},
+            {"model": model, "profile": selected.model_dump(mode="json")},
             now=self._clock(),
         )
-        self._call_counts_by_run[id(run)] = (run, {})
+        self._track_run(run)
         return run
 
     def request_model(
@@ -117,17 +162,18 @@ class AgentRuntime:
         self._require_no_pending_call(run)
 
         restored_without_repeat_history = (
-            id(run) not in self._call_counts_by_run and run.tool_rounds > 0
+            not self._is_tracked(run) and run.tool_rounds > 0
         )
         if restored_without_repeat_history and not run.final_synthesis:
             object.__setattr__(run, "final_synthesis", True)
-            run.append_event(
+            _append_event(
+                run,
                 "synthesis.required",
                 {"reason": "repeat_history_unavailable_after_restore"},
                 now=self._clock(),
             )
-        if id(run) not in self._call_counts_by_run:
-            self._call_counts_by_run[id(run)] = (run, {})
+        if not self._is_tracked(run):
+            self._track_run(run)
 
         already_final = run.final_synthesis
         final_synthesis = already_final or run.tool_rounds >= selected.max_tool_rounds
@@ -151,12 +197,14 @@ class AgentRuntime:
         object.__setattr__(run, "final_synthesis", final_synthesis)
         object.__setattr__(run, "visible_tools", tuple(visible))
         if final_synthesis and not already_final:
-            run.append_event(
+            _append_event(
+                run,
                 "synthesis.required",
                 {"reason": "tool_round_budget_exhausted"},
                 now=self._clock(),
             )
-        run.append_event(
+        _append_event(
+            run,
             "model.requested",
             {
                 "model_turn": run.model_turns,
@@ -191,7 +239,7 @@ class AgentRuntime:
             object.__setattr__(run, "status", AgentRunStatus.COMPLETED)
             object.__setattr__(run, "final_content", content)
             object.__setattr__(run, "visible_tools", ())
-            run.append_event("run.completed", {"content": content}, now=self._clock())
+            _append_event(run, "run.completed", {"content": content}, now=self._clock())
             self._call_counts_by_run.pop(id(run), None)
             return None
 
@@ -214,16 +262,18 @@ class AgentRuntime:
 
         fingerprint = _call_fingerprint(call)
         entry = self._call_counts_by_run.get(id(run))
-        if entry is None or entry[0] is not run:
-            entry = (run, {})
-            self._call_counts_by_run[id(run)] = entry
-        counts = entry[1]
+        counts = (
+            entry[1]
+            if entry is not None and entry[0]() is run
+            else self._track_run(run)
+        )
         count = counts.get(fingerprint, 0) + 1
         counts[fingerprint] = count
         if count > selected.repeated_call_limit:
             risk = by_name[call.name].risk
             object.__setattr__(run, "tool_rounds", run.tool_rounds + 1)
-            run.append_event(
+            _append_event(
+                run,
                 "tool.requested",
                 {"call": _persisted_call_data(call), "risk": risk.value},
                 now=self._clock(),
@@ -238,7 +288,8 @@ class AgentRuntime:
                 executed=False,
                 safe_summary="Repeated tool call blocked; final synthesis required.",
             )
-            run.append_event(
+            _append_event(
+                run,
                 "tool.completed",
                 self._tool_result_event_data(run, blocked),
                 now=self._clock(),
@@ -246,7 +297,8 @@ class AgentRuntime:
             object.__setattr__(run, "status", AgentRunStatus.READY)
             object.__setattr__(run, "final_synthesis", True)
             object.__setattr__(run, "visible_tools", ())
-            run.append_event(
+            _append_event(
+                run,
                 "synthesis.required",
                 {"reason": "repeated_tool_call", "tool": call.name},
                 now=self._clock(),
@@ -263,14 +315,16 @@ class AgentRuntime:
         )
         object.__setattr__(run, "pending_risk", risk)
         object.__setattr__(run, "tool_rounds", run.tool_rounds + 1)
-        run.append_event(
+        _append_event(
+            run,
             "tool.requested",
             {"call": _persisted_call_data(call), "risk": risk.value},
             now=self._clock(),
         )
         if risk.requires_approval:
             object.__setattr__(run, "status", AgentRunStatus.AWAITING_APPROVAL)
-            run.append_event(
+            _append_event(
+                run,
                 "approval.required",
                 {"call_id": call.id, "tool": call.name, "risk": risk.value},
                 now=self._clock(),
@@ -296,7 +350,8 @@ class AgentRuntime:
             raise AgentRuntimeError(
                 f"approval {call_id!r} does not match pending call {call.id!r}"
             )
-        run.append_event(
+        _append_event(
+            run,
             "approval.resolved",
             {"call_id": call.id, "approved": approved},
             now=self._clock(),
@@ -329,7 +384,8 @@ class AgentRuntime:
         run: AgentRun,
         result: AgentToolResult,
     ) -> None:
-        run.append_event(
+        _append_event(
+            run,
             "tool.completed",
             self._tool_result_event_data(run, result),
             now=self._clock(),
@@ -350,7 +406,7 @@ class AgentRuntime:
         object.__setattr__(run, "pending_call", None)
         object.__setattr__(run, "pending_risk", None)
         object.__setattr__(run, "visible_tools", ())
-        run.append_event("run.cancelled", now=self._clock())
+        _append_event(run, "run.cancelled", now=self._clock())
         self._call_counts_by_run.pop(id(run), None)
 
     @staticmethod
@@ -370,7 +426,7 @@ class AgentRuntime:
         object.__setattr__(run, "pending_call", None)
         object.__setattr__(run, "pending_risk", None)
         object.__setattr__(run, "visible_tools", ())
-        run.append_event("run.failed", {"code": code}, now=self._clock())
+        _append_event(run, "run.failed", {"code": code}, now=self._clock())
         self._call_counts_by_run.pop(id(run), None)
 
     @staticmethod
@@ -383,7 +439,6 @@ class AgentRuntime:
             "is_error": result.is_error,
             "executed": result.executed,
             "content_bytes": len(encoded),
-            "content_sha256": hashlib.sha256(encoded).hexdigest(),
         }
         if result.safe_summary is not None:
             persisted_result["safe_summary"] = result.safe_summary

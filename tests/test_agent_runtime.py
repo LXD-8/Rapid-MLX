@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
+import weakref
+
 import pytest
 from pydantic import ValidationError
 
@@ -314,6 +317,36 @@ def test_restore_replays_approval_for_every_executed_external_call():
         AgentRun.model_validate(payload)
 
 
+def test_restore_rejects_approval_that_precedes_its_request():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
+    runtime.request_model(run, [SEND])
+    runtime.accept_model_turn(
+        run,
+        AgentModelTurn(tool_calls=[AgentToolCall(id="send-1", name="send_message")]),
+    )
+    payload = run.model_dump(mode="json")
+    request_index = next(
+        index
+        for index, event in enumerate(payload["events"])
+        if event["type"] == "tool.requested"
+    )
+    approval_index = next(
+        index
+        for index, event in enumerate(payload["events"])
+        if event["type"] == "approval.required"
+    )
+    payload["events"][request_index], payload["events"][approval_index] = (
+        payload["events"][approval_index],
+        payload["events"][request_index],
+    )
+    for sequence, event in enumerate(payload["events"], start=1):
+        event["sequence"] = sequence
+
+    with pytest.raises(ValidationError, match="does not match an external call"):
+        AgentRun.model_validate(payload)
+
+
 def test_mismatched_tool_result_does_not_advance_the_run():
     runtime = _runtime()
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read the report")
@@ -456,6 +489,19 @@ def test_repeat_counters_are_isolated_for_duplicate_public_run_ids():
         assert output.observation is None
 
 
+def test_abandoned_run_does_not_leak_through_repeat_tracking():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Abandon")
+    identity = id(run)
+    reference = weakref.ref(run)
+
+    del run
+    gc.collect()
+
+    assert reference() is None
+    assert identity not in runtime._call_counts_by_run
+
+
 def test_restored_run_with_tool_history_forces_tools_off_synthesis():
     first_runtime = _runtime()
     run = first_runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
@@ -474,29 +520,6 @@ def test_restored_run_with_tool_history_forces_tools_off_synthesis():
     assert restored.events[-2].data["reason"] == (
         "repeat_history_unavailable_after_restore"
     )
-
-
-def test_repeat_counters_are_isolated_for_duplicate_public_run_ids():
-    profile = AgentProfile(
-        name="strict-repeat",
-        max_visible_tools=1,
-        max_tool_rounds=4,
-        repeated_call_limit=1,
-    )
-    runtime = _runtime()
-    first = runtime.create_run(
-        model="test", goal="First", run_id="same", profile=profile
-    )
-    second = runtime.create_run(
-        model="test", goal="Second", run_id="same", profile=profile
-    )
-
-    for run in (first, second):
-        runtime.request_model(run, [READ])
-        output = runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
-        assert output is not None
-        assert output.call is not None
-        assert output.observation is None
 
 
 def test_tool_budget_reserves_a_tools_disabled_final_synthesis():
@@ -606,7 +629,24 @@ def test_restored_run_rejects_a_weakened_model_profile():
     payload = run.model_dump(mode="json")
     payload["profile"]["max_visible_tools"] = 7
 
-    with pytest.raises(ValidationError, match="weakens required model limits"):
+    with pytest.raises(ValidationError, match="run profile does not match"):
+        AgentRun.model_validate(payload)
+
+
+def test_run_has_no_public_event_append_escape_hatch():
+    run = _runtime().create_run(model="minicpm5-2b-4bit", goal="Read")
+    assert not hasattr(run, "append_event")
+
+
+def test_restore_rejects_extra_sensitive_event_fields():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
+    runtime.request_model(run, [READ])
+    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call(token="secret")]))
+    payload = run.model_dump(mode="json")
+    payload["events"][-1]["data"]["call"]["arguments"] = {"token": "secret"}
+
+    with pytest.raises(ValidationError, match="unexpected payload fields|malformed"):
         AgentRun.model_validate(payload)
 
 

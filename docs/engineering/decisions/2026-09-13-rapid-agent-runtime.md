@@ -52,7 +52,8 @@ closed. This keeps policy identical without forcing macOS-only tools into Python
 
 ### P0 invariants
 
-1. A run is bound to one immutable model profile.
+1. A run is bound to one immutable model profile. `run.created` persists the
+   complete profile snapshot and restore requires exact equality.
 2. The MiniCPM5-2B profile exposes at most six tools and permits eight tool
    rounds. P0 accepts one tool call per model turn for every profile.
 3. Tools not advertised for that exact turn fail closed.
@@ -65,7 +66,8 @@ closed. This keeps policy identical without forcing macOS-only tools into Python
 5. Repeating the same tool and arguments more than twice disables tools and
    forces final synthesis.
 6. Tool-round exhaustion reserves one tools-disabled final synthesis turn.
-7. Every transition appends a versioned, monotonically sequenced event; restore
+7. Only the reducer can append events. Every transition appends a versioned,
+   monotonically sequenced event; restore
    rejects duplicate, gapped, or out-of-order histories and state/profile /
    counter values that disagree with that history.
 8. Persistent state contains goal, actions, result metadata/safe summaries,
@@ -77,6 +79,8 @@ closed. This keeps policy identical without forcing macOS-only tools into Python
    Repeat fingerprints are runtime-local and are never serialized.
    After restart, a run with prior tool history conservatively enters a
    tools-disabled final synthesis because exact repeat history is unavailable.
+   Live repeat tracking uses weak run references, so abandoned runs do not pin
+   memory.
 9. Host-generated denial and loop-guard observations are returned transiently
    to the adapter, so every model tool call receives a matching tool result.
 10. Tool results carry a short host-authored ledger block. It is not appended as
