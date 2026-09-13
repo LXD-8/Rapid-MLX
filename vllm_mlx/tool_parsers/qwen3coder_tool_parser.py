@@ -89,14 +89,23 @@ def _convert_param_value(
 ) -> Any:
     """Convert parameter value based on its type in the schema.
 
-    Scalar keywords are matched against a whitespace-trimmed copy, never
+    The TYPED scalar branches match against a whitespace-trimmed copy, never
     against the value that gets returned. Values used to arrive here already
     ``.strip()``-ed; now that only the wire's wrapping newline is removed
     (#3401), a model that pads a scalar -- ``<parameter=flag> true </parameter>``
-    -- must still resolve to the scalar. Payload-bearing types keep every byte.
+    -- must still resolve to the scalar rather than to ``False``.
+
+    The ``null`` check deliberately does NOT trim, matching vLLM and SGLang.
+    It runs before the type dispatch, so it applies to string-typed values
+    too, and this function is not idempotent: the streaming close path can
+    convert an already-decoded value a second time (a pre-existing defect in
+    ``_close_string_increment``), where a trimmed match would turn the string
+    ``" null "`` into ``None`` in the streamed arguments but not the
+    non-streamed ones. Leaving it untrimmed keeps that defect exactly as it
+    was rather than widening it.
     """
     keyword = param_value.strip()
-    if keyword.lower() == "null":
+    if param_value.lower() == "null":
         return None
 
     if param_name not in param_config:
@@ -376,39 +385,19 @@ class Qwen3CoderToolParser(ToolParser):
         return inner
 
     def _close_string_increment(
-        self,
-        param_name: str,
-        full_value: str,
-        param_config: dict,
-        *,
-        already_converted: bool = False,
+        self, param_name: str, full_value: str, param_config: dict
     ) -> str:
         """Emit the closing fragment for an in-flight string param now that
         ``</parameter>`` has arrived. Handles both the long-string case
         (opener already emitted; emit tail + closing quote) and the short-
         string case (opener never emitted; emit the whole ``"name": "value"``).
-
-        ``already_converted`` says the caller has ALREADY run
-        ``_convert_param_value`` on ``full_value``. It has to, for a
-        JSON-quoted wire value: the long-string branch below slices
-        ``full_value`` by ``in_param_emitted_chars``, which counts decoded
-        characters. Converting a second time here re-interprets a decoded
-        payload as if it were still wire text, and the conversion is not
-        idempotent — a string whose value is ``null`` decodes to the Python
-        string ``"null"`` on the first pass and then to ``None`` on the
-        second, so the streamed arguments disagreed with the non-streamed
-        ones for that input. Convert exactly once.
         """
         if not self.in_param_opened:
-            converted = (
-                full_value
-                if already_converted
-                else _convert_param_value(
-                    full_value,
-                    param_name,
-                    param_config,
-                    self.current_function_name or "",
-                )
+            converted = _convert_param_value(
+                full_value,
+                param_name,
+                param_config,
+                self.current_function_name or "",
             )
             serialized = json.dumps(converted, ensure_ascii=False)
             prefix = "" if self.param_count == 0 else ", "
@@ -1270,10 +1259,7 @@ class Qwen3CoderToolParser(ToolParser):
                             else pv
                         )
                         frag = self._close_string_increment(
-                            self.in_param_name,
-                            close_value,
-                            param_config,
-                            already_converted=json_string_pending,
+                            self.in_param_name, close_value, param_config
                         )
                         if frag:
                             json_fragments.append(frag)

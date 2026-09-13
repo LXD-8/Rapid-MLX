@@ -197,7 +197,11 @@ def test_streaming_finalize_matches_non_streaming() -> None:
         ("boolean", "\n true \n", True),
         ("integer", " 42 ", 42),
         ("number", " 1.5 ", 1.5),
-        ("string", " null ", None),
+        # ``null`` is matched WITHOUT trimming (see _convert_param_value):
+        # it runs before the type dispatch, and trimming it would widen a
+        # pre-existing stream/non-stream divergence in the close path.
+        ("string", " null ", " null "),
+        ("string", "null", None),
     ],
 )
 def test_padded_scalars_still_convert(declared_type, emitted, expected) -> None:
@@ -240,7 +244,7 @@ def test_nemotron_xml_body_keeps_indentation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Conversion must happen exactly once (codex adversarial review, round 2)
+# Parity guard for the scalar-keyword trim (codex adversarial review, r2/r4)
 # ---------------------------------------------------------------------------
 
 
@@ -266,30 +270,8 @@ def _stream_arguments(chunks: list[str], request: dict) -> dict:
     return json.loads("".join(fragments))
 
 
-@pytest.mark.parametrize(
-    "wire",
-    [
-        # The value IS the four characters n-u-l-l. One conversion decodes the
-        # JSON string; a second one reads that result as the null keyword.
-        '"null"',
-        # Padded: only reachable once values stop being .strip()-ed, which is
-        # how this PR surfaced a defect that predates it.
-        '" null "',
-        '"true"',
-        '"42"',
-    ],
-)
-def test_json_quoted_value_is_converted_exactly_once(wire: str) -> None:
-    """A JSON-quoted string value must survive streaming unchanged.
-
-    ``_close_string_increment`` used to re-run ``_convert_param_value`` on a
-    value its caller had already converted. That conversion is not idempotent:
-    ``'"null"'`` decodes to the Python string ``"null"`` on the first pass and
-    to ``None`` on the second, so the streamed arguments disagreed with the
-    non-streamed ones. Pre-existing on main for ``'"null"'`` -- this PR widened
-    it to the padded form before fixing both.
-    """
-    request = {
+def _one_param_request(declared_type: str) -> dict:
+    return {
         "tools": [
             {
                 "type": "function",
@@ -297,47 +279,47 @@ def test_json_quoted_value_is_converted_exactly_once(wire: str) -> None:
                     "name": "f",
                     "parameters": {
                         "type": "object",
-                        "properties": {"x": {"type": "string"}},
+                        "properties": {"x": {"type": declared_type}},
                     },
                 },
             }
         ]
     }
-    chunks = [
+
+
+def _chunks_for(wire: str) -> list[str]:
+    """Split so ``</parameter>`` arrives in the same chunk as the value tail —
+    the shape that reaches the close path before anything has been emitted."""
+    return [
         "<tool_call>\n<function=f>\n",
         "<parameter=x>\n" + wire[:1],
         wire[1:] + "\n</parameter>\n</function>\n</tool_call>",
     ]
-    streamed = _stream_arguments(chunks, request)
-    non_streamed = _arguments("".join(chunks), request)
-    assert streamed == non_streamed, (
-        f"stream/non-stream divergence for {wire!r}: {streamed!r} != {non_streamed!r}"
-    )
-    assert streamed["x"] == json.loads(wire)
 
 
 def test_padded_bare_boolean_agrees_across_paths() -> None:
-    """The scalar-keyword guard also closed a divergence that predates this
-    PR: a padded bare ``true`` streamed as ``False`` while the non-streaming
-    path returned ``True``."""
-    request = {
-        "tools": [
-            {
-                "type": "function",
-                "function": {
-                    "name": "f",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"x": {"type": "boolean"}},
-                    },
-                },
-            }
-        ]
-    }
-    chunks = [
-        "<tool_call>\n<function=f>\n",
-        "<parameter=x>\n ",
-        "true \n</parameter>\n</function>\n</tool_call>",
-    ]
+    """The scalar-keyword trim must not create a stream/non-stream split, and
+    in fact closes one: on v0.14.1 a padded bare ``true`` streamed as ``False``
+    while the non-streaming path returned ``True``."""
+    request = _one_param_request("boolean")
+    chunks = _chunks_for(" true ")
     assert _stream_arguments(chunks, request) == {"x": True}
     assert _arguments("".join(chunks), request) == {"x": True}
+
+
+@pytest.mark.parametrize("wire", ['" null "', '" true "', '"  padded  "'])
+def test_padded_json_quoted_string_keeps_stream_parity(wire: str) -> None:
+    """``null`` is matched WITHOUT trimming, unlike the typed scalars.
+
+    ``_convert_param_value`` runs before the type dispatch and is not
+    idempotent, and the streaming close path can convert an already-decoded
+    value a second time -- a defect in ``_close_string_increment`` that
+    predates this PR and is a non-goal here. A trimmed ``null`` match would
+    have widened it, turning the string ``" null "`` into ``None`` in the
+    streamed arguments only. Pin the parity so that stays true.
+    """
+    request = _one_param_request("string")
+    chunks = _chunks_for(wire)
+    streamed = _stream_arguments(chunks, request)
+    assert streamed == _arguments("".join(chunks), request)
+    assert streamed["x"] == json.loads(wire)
