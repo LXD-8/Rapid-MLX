@@ -223,6 +223,77 @@ class TestRecordAndRestore:
 # ---------------------------------------------------------------------------
 
 
+class TestGuards:
+    """Every refusal branch records or restores nothing."""
+
+    def test_env_knobs_fall_back_on_garbage(self, monkeypatch):
+        from vllm_mlx import hybrid_state_checkpoints as hsc
+
+        monkeypatch.setenv("RAPID_MLX_HYBRID_CHECKPOINT_MAX", "four")
+        monkeypatch.setenv("RAPID_MLX_HYBRID_CHECKPOINT_STRIDE", "  ")
+        assert hsc.checkpoint_max() == hsc._DEFAULT_MAX
+        assert hsc.checkpoint_stride() == hsc._DEFAULT_STRIDE
+        monkeypatch.setenv("RAPID_MLX_HYBRID_CHECKPOINT_STRIDE", "0")
+        assert hsc.checkpoint_stride() == 1
+
+    def test_array_bytes_fallbacks(self):
+        from vllm_mlx.hybrid_state_checkpoints import _array_bytes
+
+        assert _array_bytes(None) == 0
+        assert _array_bytes(SimpleNamespace(nbytes=24)) == 24
+        assert _array_bytes(object()) == 0
+        assert _array_bytes(_Array(0, (2, 3))) == 12
+
+    def test_without_mlx_lm_nothing_is_recurrent(self, monkeypatch):
+        import sys
+
+        from vllm_mlx import hybrid_state_checkpoints as hsc
+
+        monkeypatch.setattr(hsc, "_RECURRENT_TYPES", None)
+        monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", None)
+        assert hsc._recurrent_cache_types() == ()
+        assert not hsc.is_recurrent_layer(_RecurrentLayer(0))
+
+    def test_attach_ignores_misaligned_holders(self):
+        cache = _cache(0)
+        holders = collect_checkpoints(cache)
+        record_checkpoints(cache, holders, 2048, max_count=4, stride=1)
+        target = _cache(1)
+        attach_checkpoints(target, holders[:2])
+        assert layer_checkpoints(target[1]) is None
+
+    def test_record_without_recurrent_layers_is_a_noop(self):
+        cache = [_KVLayer(), _KVLayer()]
+        holders = collect_checkpoints(cache)
+        assert not record_checkpoints(cache, holders, 2048, max_count=4, stride=1)
+        assert holders == [None, None]
+
+    def test_restore_without_checkpoints_returns_none(self):
+        assert restore_recurrent_layer(_RecurrentLayer(0), 2048) is None
+        assert restore_recurrent_layer(_KVLayer(), 2048) is None
+
+    def test_snap_refusals(self, monkeypatch):
+        from vllm_mlx import memory_cache
+        from vllm_mlx.memory_cache import _snap_hybrid_trim
+
+        cache = _cache(0)
+        assert _snap_hybrid_trim(cache, 100, 0) is None
+        assert _snap_hybrid_trim(cache, 0, 100) is None
+        # Recurrent layers without any checkpoint: no position to resume at.
+        assert _snap_hybrid_trim(cache, 4096, 3000) is None
+
+        holders = collect_checkpoints(cache)
+        record_checkpoints(cache, holders, 2048, max_count=4, stride=1)
+        attach_checkpoints(cache, holders)
+        assert _snap_hybrid_trim(cache, 4096, 3000)[1] == 2048
+        # A recurrent layer whose checkpoint cannot be restored vetoes the snap.
+        monkeypatch.setattr(memory_cache, "restore_recurrent_layer", lambda *_: None)
+        assert _snap_hybrid_trim(cache, 4096, 3000) is None
+        # So does a KV layer that cannot be rewound exactly.
+        monkeypatch.setattr(memory_cache, "_trim_cache_offset", lambda *_: None)
+        assert _snap_hybrid_trim(cache, 4096, 3000) is None
+
+
 @pytest.mark.requires_mlx
 class TestMemoryCacheSnap:
     @staticmethod
@@ -432,6 +503,46 @@ class TestSchedulerRecording:
 
         scheduler._seed_hybrid_checkpoints(6, _cache(0))  # nothing attached
         assert 6 not in scheduler._hybrid_checkpoints
+
+    def test_record_skips_malformed_or_unknown_responses(self, monkeypatch):
+        monkeypatch.setenv("RAPID_MLX_HYBRID_CHECKPOINT_STRIDE", "1")
+        scheduler = self._scheduler()
+        self._register(scheduler, uid=4)
+        scheduler.batch_generator.extract_cache.return_value = {}
+        scheduler._record_hybrid_checkpoints(
+            [
+                SimpleNamespace(
+                    uid=4, progress=None, end_of_prompt=False
+                ),  # no progress
+                self._response(99, 2048),  # unknown uid
+                self._response(4, 2048),  # extract_cache returns no payload
+            ]
+        )
+        assert scheduler.batch_generator.extract_cache.call_count == 1
+        assert 4 not in scheduler._hybrid_checkpoints
+
+        scheduler.batch_generator.extract_cache.return_value = {4: ([], [])}
+        scheduler._record_hybrid_checkpoints([self._response(4, 2048)])
+        assert 4 not in scheduler._hybrid_checkpoints
+
+        # Holders from a restored prefix that do not line up with the live
+        # cache layout are left alone rather than mis-attached.
+        scheduler._hybrid_checkpoints[4] = [None]
+        scheduler.batch_generator.extract_cache.return_value = {4: (_cache(4), [])}
+        scheduler._record_hybrid_checkpoints([self._response(4, 2048)])
+        assert scheduler._hybrid_checkpoints[4] == [None]
+
+    def test_scheduler_without_batch_generator_or_cache_records_nothing(self):
+        scheduler = self._scheduler()
+        self._register(scheduler, uid=2)
+        scheduler.batch_generator = None
+        scheduler._record_hybrid_checkpoints([self._response(2, 2048)])
+        assert 2 not in scheduler._hybrid_checkpoints
+
+        scheduler.memory_aware_cache = None
+        assert not scheduler._hybrid_checkpoints_enabled()
+        scheduler._seed_hybrid_checkpoints(2, _cache(0))
+        assert 2 not in scheduler._hybrid_checkpoints
 
     def test_extract_failure_is_ignored(self):
         scheduler = self._scheduler()
