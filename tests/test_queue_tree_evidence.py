@@ -155,6 +155,22 @@ def test_create_rejects_partial_gui_matrix(tmp_path: Path):
         evidence.create_evidence(client, 10, 30, TRUSTED, _manifest(tmp_path))
 
 
+def test_create_rejects_older_success_while_newer_run_is_in_progress(
+    tmp_path: Path,
+):
+    client = _configured_client()
+    pending = _run(11, evidence.MAC_WORKFLOW_PATH) | {
+        "status": "in_progress",
+        "conclusion": None,
+    }
+    client.responses[f"repos/{REPO}/actions/workflows/{evidence.MAC_WORKFLOW}/runs"] = {
+        "workflow_runs": [pending, client.responses[f"repos/{REPO}/actions/runs/10"]]
+    }
+
+    with pytest.raises(evidence.EvidenceError, match="status 'in_progress'"):
+        evidence.create_evidence(client, 10, 30, TRUSTED, _manifest(tmp_path))
+
+
 def test_manifest_read_failure_is_a_cache_miss(tmp_path: Path):
     with pytest.raises(evidence.EvidenceError, match="cannot read GUI journey"):
         evidence._manifest_groups(tmp_path / "missing.yaml")

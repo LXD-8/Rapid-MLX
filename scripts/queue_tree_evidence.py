@@ -186,20 +186,19 @@ def _latest_authoritative_run(
             run.get("head_sha") == sha
             and run.get("head_branch") == branch
             and run.get("event") == "pull_request"
-            and run.get("status") == "completed"
             and run.get("conclusion") != "cancelled"
         ):
             candidates.append(run)
     if not candidates:
-        raise EvidenceError(f"{workflow}: no completed non-cancelled candidate run")
+        raise EvidenceError(f"{workflow}: no non-cancelled candidate run")
     latest = max(
         candidates,
         key=lambda run: (_field(run, "id", int), _field(run, "run_attempt", int)),
     )
-    if latest.get("conclusion") != "success":
+    if latest.get("status") != "completed" or latest.get("conclusion") != "success":
         raise EvidenceError(
             f"{workflow}: latest authoritative run {latest['id']} concluded "
-            f"{latest.get('conclusion')!r}"
+            f"{latest.get('conclusion')!r} with status {latest.get('status')!r}"
         )
     return latest
 
