@@ -11,18 +11,17 @@ combined in the public claim.
 
 ## Reference check
 
-- vLLM has no analogous MLX model-layer submission mechanism; its only
-  `async_eval` code-search hit is an unrelated evaluation script.
-- SGLang's MLX backend pipelines whole lazy decode steps and explicitly submits
-  pending token/cache arrays. That is a promising separate scheduler-level
-  direction, but materially larger than this model-layer PR and should be
-  tested as its own spike.
-- MLX-LM submits selected generation outputs, not individual Qwen3.5 decoder
-  layers.
-- `pierre427/mlx-lm-unified@f4d2cdac35d67c1ae07784276b9520a51c73635f`
-  supplied the model-layer precedent and same-boot measurement lesson. Rapid
-  adapted only the narrow scheduling idea; its own mixed-workload and server
-  gates determine the shipping boundary.
+- Primary GPU-serving precedents do not have an analogous model-layer
+  submission mechanism for this lazy execution runtime.
+- One MLX server precedent pipelines whole lazy decode steps and explicitly
+  submits pending token/cache arrays. That is a promising separate scheduler-
+  level direction, but materially larger than this model-layer PR and should
+  be tested as its own spike.
+- The upstream model runtime submits selected generation outputs, not
+  individual Qwen3.5 decoder layers.
+- A unified MLX runtime prototype supplied the model-layer precedent and the
+  same-boot measurement lesson. Rapid adapted only the narrow scheduling idea;
+  its own mixed-workload and server gates determine the shipping boundary.
 
 ## Rejected/deferred items from the same review
 
