@@ -112,7 +112,23 @@ def test_successful_tool_round_has_stable_events_and_roundtrips():
     event = run.events[-1]
     restored = AgentEvent.model_validate_json(event.model_dump_json())
     assert restored == event
-    assert "Choose only the next necessary action" in run.events[3].data["ledger"]
+    assert "ledger" not in run.events[3].data
+    assert "Choose only the next necessary action" in runtime.ledger_context(run)
+
+
+def test_goal_bearing_ledger_never_enters_wire_events():
+    runtime = _runtime()
+    secret = "clipboard-secret-do-not-persist"
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal=f"Use {secret}")
+    runtime.request_model(run, [READ])
+    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call(path="a.md")]))
+    runtime.accept_tool_result(
+        run,
+        AgentToolResult(call_id="call-1", content="sensitive result"),
+    )
+
+    assert secret in runtime.ledger_context(run)
+    assert secret not in "".join(event.model_dump_json() for event in run.events)
 
 
 def test_minicpm_rejects_an_oversized_tool_surface():

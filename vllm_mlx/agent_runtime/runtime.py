@@ -106,10 +106,6 @@ class AgentRuntime:
             int, tuple[weakref.ReferenceType[AgentRun], _LiveRunState]
         ] = {}
 
-    def _is_tracked(self, run: AgentRun) -> bool:
-        entry = self._call_counts_by_run.get(id(run))
-        return entry is not None and entry[0]() is run
-
     def _track_run(self, run: AgentRun) -> _LiveRunState:
         key = id(run)
 
@@ -285,7 +281,7 @@ class AgentRuntime:
             _append_event(
                 run,
                 "tool.completed",
-                self._tool_result_event_data(run, blocked),
+                self._tool_result_event_data(blocked),
                 now=self._clock(),
             )
             object.__setattr__(run, "status", AgentRunStatus.READY)
@@ -390,7 +386,7 @@ class AgentRuntime:
         _append_event(
             run,
             "tool.completed",
-            self._tool_result_event_data(run, result),
+            self._tool_result_event_data(result),
             now=self._clock(),
         )
         object.__setattr__(run, "pending_call", None)
@@ -434,9 +430,7 @@ class AgentRuntime:
         self._call_counts_by_run.pop(id(run), None)
 
     @staticmethod
-    def _tool_result_event_data(
-        run: AgentRun, result: AgentToolResult
-    ) -> dict[str, JsonValue]:
+    def _tool_result_event_data(result: AgentToolResult) -> dict[str, JsonValue]:
         encoded = result.content.encode()
         persisted_result: dict[str, JsonValue] = {
             "call_id": result.call_id,
@@ -446,10 +440,9 @@ class AgentRuntime:
         }
         if result.safe_summary is not None:
             persisted_result["safe_summary"] = result.safe_summary
-        data: dict[str, JsonValue] = {"result": persisted_result}
-        if run.profile.attach_ledger_to_tool_results:
-            data["ledger"] = AgentRuntime.ledger_context(run)
-        return data
+        # The adapter may attach ``ledger_context(run)`` to the next model
+        # request, but it must remain transient: it contains the user's goal.
+        return {"result": persisted_result}
 
     @staticmethod
     def _pending_call(run: AgentRun) -> RedactedPendingCall:

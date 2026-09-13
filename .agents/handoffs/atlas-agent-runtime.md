@@ -8,7 +8,8 @@
 ## Verified facts
 
 - Desktop already owns built-in tools, MCP adapters, approval UX, MemoryStore,
-  a bounded chat tool loop, and a metadata-only LocalWorkflow ledger.
+  a bounded chat tool loop, and a transient LocalWorkflow ledger that is never
+  copied into public events.
 - Server already owns model routing, MCP discovery/execution, tool parsing,
   authentication, and Chat/Responses APIs.
 - The P0 kernel adds no dependency or process. It stores a complete immutable

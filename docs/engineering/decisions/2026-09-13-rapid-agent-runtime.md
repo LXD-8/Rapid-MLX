@@ -77,8 +77,10 @@ forcing macOS-only tools into Python.
    abandoned runs do not pin memory.
 9. Host-generated denial and loop-guard observations are returned transiently
    to the adapter, so every model tool call receives a matching tool result.
-10. Tool results carry a short host-authored ledger block. It is not appended as
-   a new user instruction; the A/B test showed that shape can restart the task.
+10. Adapters attach a short host-authored ledger block to the next model request.
+    It stays transient because it includes the goal, and is never copied into a
+    wire event. It is not appended as a new user instruction; the A/B test showed
+    that shape can restart the task.
 
 ### Deliberately absent from P0
 
