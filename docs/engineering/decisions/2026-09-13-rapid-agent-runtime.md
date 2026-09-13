@@ -36,51 +36,45 @@ Plain `/v1/chat/completions` and `/v1/responses` remain stateless and unchanged.
 
 The runtime kernel is a deterministic reducer. It does not call a model, run a
 tool, persist secrets, or store hidden reasoning. Adapters drive model requests
-and tool execution around it. Its serialized `AgentRun` plus append-only
-`AgentEvent` is the shared persistent contract for headless and Desktop paths.
-Sensitive execution payloads use a separate transient `AgentRuntimeOutput` and
-are never reconstructed from the audit stream.
+and tool execution around it. `AgentRun` is frozen, process-local state owned by
+the runtime; it is deliberately not a restore format. Immutable `AgentEvent`
+objects are the only GUI/server wire contract. A process restart terminates
+in-flight P0 runs instead of reconstructing safety state from client data.
 
 Desktop will eventually submit and observe runs over the server API. Desktop
 built-in tools may remain client-executed: the server emits a redacted
 `tool.requested` event and delivers the transient call payload over the
-authenticated live request channel. Desktop applies its existing approval and
-tool registry, then returns a typed result. Headless operation sends the same
-transient output to the existing Server MCP executor. The adapter holds an
-approved call only until completion; restart recovery fails an in-flight call
-closed. This keeps policy identical without forcing macOS-only tools into Python.
+authenticated live request channel. For external side effects, the runtime
+holds the raw call internally and releases executable output only after an
+exact positive approval. Desktop then uses its existing tool registry and
+returns a typed result. Headless operation sends the same approved transient
+output to the existing Server MCP executor. This keeps policy identical without
+forcing macOS-only tools into Python.
 
 ### P0 invariants
 
-1. A run is bound to one immutable model profile. `run.created` persists the
-   complete profile snapshot and restore requires exact equality.
+1. A run is bound to one immutable model profile, recorded completely in
+   `run.created`. Only the runtime instance that created a run may advance it.
 2. The MiniCPM5-2B profile exposes at most six tools and permits eight tool
    rounds. P0 accepts one tool call per model turn for every profile.
 3. Tools not advertised for that exact turn fail closed.
    Registry adapters must classify every tool explicitly; there is no
    permissive default risk.
 4. External side effects pause for an explicit approval result tied to the
-   exact pending call ID; a call ID may appear only once in a run. Restore
-   replays every external call and rejects an executed result without a prior
-   matching approval. Blocked/denied results are explicitly marked unexecuted.
+   exact pending call ID; their raw executable call is released only after
+   `approved=True`. A call ID may appear only once in a run. Blocked/denied
+   results are explicitly marked unexecuted.
 5. Repeating the same tool and arguments more than twice disables tools and
    forces final synthesis.
 6. Tool-round exhaustion reserves one tools-disabled final synthesis turn.
-7. Only the reducer can append events. Every transition appends a versioned,
-   monotonically sequenced event; restore
-   rejects duplicate, gapped, or out-of-order histories and state/profile /
-   counter values that disagree with that history.
-8. Persistent state contains goal, actions, result metadata/safe summaries,
-   counters, and final text; never raw tool payload values, model reasoning,
-   credentials, screenshots, or clipboard contents. Request events retain only
-   call identity and argument names. The adapter passes raw call arguments and
-   tool results only to immediate execution/model turns; credentials must be
-   resolved from opaque references out of band.
-   Repeat fingerprints are runtime-local and are never serialized.
-   After restart, a run with prior tool history conservatively enters a
-   tools-disabled final synthesis because exact repeat history is unavailable.
-   Live repeat tracking uses weak run references, so abandoned runs do not pin
-   memory.
+7. Only the reducer can append events. Every transition emits a versioned,
+   monotonically sequenced immutable event.
+8. Events contain action metadata and safe summaries, never raw tool payload
+   values, model reasoning, credentials, screenshots, or clipboard contents.
+   Request events retain only call identity and argument names. Credentials
+   must be resolved from opaque references out of band. Raw calls, results, and
+   repeat fingerprints remain runtime-local. Weak run references ensure
+   abandoned runs do not pin memory.
 9. Host-generated denial and loop-guard observations are returned transiently
    to the adapter, so every model tool call receives a matching tool result.
 10. Tool results carry a short host-authored ledger block. It is not appended as
@@ -100,8 +94,9 @@ These omissions are architectural boundaries, not a roadmap promise.
 ## Integration sequence
 
 1. **Kernel and contract:** model profiles, reducer, event schema, budgets,
-   approval pause, repeat guard, and serialization tests.
-2. **Server adapter:** run store and authenticated run/event/result endpoints;
+   approval pause, repeat guard, and event serialization tests.
+2. **Server adapter:** bounded in-memory run store and authenticated
+   run/event/result endpoints;
    drive the existing chat generation path and Server MCP executor.
 3. **Desktop adapter:** decode the same event schema; execute existing built-in
    tools and approvals; retain the old loop as rollback until parity tests pass.
@@ -116,10 +111,11 @@ is data in `AgentProfile`, so Qwen and future compact models reuse the same
 runtime. The server becomes the owner of run state, while the GUI stays the
 owner of macOS presentation and client-local tool execution.
 
-The initial in-memory adapter will not claim crash durability. Durable SQLite
-storage is added with the server API, using atomic transitions and explicit
-schema migration. Until Desktop has migrated, its existing tool loop remains
-the shipping path.
+P0 does not claim crash durability and does not accept serialized runs back from
+clients. Durable recovery is a separate future decision that would require an
+explicit event-replay state machine, atomic storage, migrations, and corruption
+tests. Until Desktop has migrated, its existing tool loop remains the shipping
+path.
 
 ## References
 

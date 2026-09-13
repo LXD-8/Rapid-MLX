@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from vllm_mlx.agent_runtime import (
+    AgentEvent,
     AgentModelTurn,
     AgentProfile,
     AgentRun,
@@ -58,9 +59,9 @@ def test_minicpm_profile_is_alias_and_repo_aware():
 def test_run_identity_and_profile_are_immutable_after_creation():
     run = _runtime().create_run(model="minicpm5-2b-4bit", goal="Do the task")
 
-    with pytest.raises(ValidationError, match="Field is frozen"):
+    with pytest.raises(ValidationError, match="frozen"):
         run.profile = resolve_agent_profile("qwen3.5-4b-4bit")
-    with pytest.raises(ValidationError, match="Field is frozen"):
+    with pytest.raises(ValidationError, match="frozen"):
         run.model = "different-model"
 
 
@@ -108,8 +109,9 @@ def test_successful_tool_round_has_stable_events_and_roundtrips():
         "model.requested",
         "run.completed",
     ]
-    restored = AgentRun.model_validate_json(run.model_dump_json())
-    assert restored == run
+    event = run.events[-1]
+    restored = AgentEvent.model_validate_json(event.model_dump_json())
+    assert restored == event
     assert "Choose only the next necessary action" in run.events[3].data["ledger"]
 
 
@@ -229,6 +231,32 @@ def test_external_side_effect_pauses_for_approval_and_denial_is_evidence():
     )
 
 
+def test_external_call_is_released_only_after_exact_approval():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
+    runtime.request_model(run, [SEND])
+    initial = runtime.accept_model_turn(
+        run,
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="send-1",
+                    name="send_message",
+                    arguments={"text": "Ready"},
+                )
+            ]
+        ),
+    )
+
+    assert initial is None
+    assert "Ready" not in run.model_dump_json()
+
+    approved = runtime.resolve_approval(run, call_id="send-1", approved=True)
+    assert approved is not None
+    assert approved.call is not None
+    assert approved.call.arguments == {"text": "Ready"}
+
+
 def test_stale_approval_does_not_authorize_the_pending_call():
     runtime = _runtime()
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send the update")
@@ -260,91 +288,6 @@ def test_approval_rejects_truthy_and_falsy_non_booleans(not_bool):
         runtime.resolve_approval(run, call_id="send-1", approved=not_bool)
 
     assert run.status is AgentRunStatus.AWAITING_APPROVAL
-
-
-def test_restore_requires_matching_approval_for_external_side_effect():
-    runtime = _runtime()
-    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
-    runtime.request_model(run, [SEND])
-    runtime.accept_model_turn(
-        run,
-        AgentModelTurn(tool_calls=[AgentToolCall(id="send-1", name="send_message")]),
-    )
-    payload = run.model_dump(mode="json")
-    payload["status"] = "awaiting_tool_result"
-
-    with pytest.raises(ValidationError, match="requires matching approved"):
-        AgentRun.model_validate(payload)
-
-
-def test_approved_external_side_effect_roundtrips_while_awaiting_result():
-    runtime = _runtime()
-    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
-    runtime.request_model(run, [SEND])
-    runtime.accept_model_turn(
-        run,
-        AgentModelTurn(tool_calls=[AgentToolCall(id="send-1", name="send_message")]),
-    )
-    runtime.resolve_approval(run, call_id="send-1", approved=True)
-
-    restored = AgentRun.model_validate_json(run.model_dump_json())
-    assert restored.model_dump(mode="json") == run.model_dump(mode="json")
-
-
-def test_restore_replays_approval_for_every_executed_external_call():
-    runtime = _runtime()
-    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
-    runtime.request_model(run, [SEND])
-    runtime.accept_model_turn(
-        run,
-        AgentModelTurn(tool_calls=[AgentToolCall(id="send-1", name="send_message")]),
-    )
-    runtime.resolve_approval(run, call_id="send-1", approved=True)
-    runtime.accept_tool_result(
-        run,
-        AgentToolResult(call_id="send-1", content="sent", safe_summary="Sent."),
-    )
-    payload = run.model_dump(mode="json")
-    payload["events"] = [
-        event
-        for event in payload["events"]
-        if not event["type"].startswith("approval.")
-    ]
-    for sequence, event in enumerate(payload["events"], start=1):
-        event["sequence"] = sequence
-
-    with pytest.raises(ValidationError, match="executed external call requires"):
-        AgentRun.model_validate(payload)
-
-
-def test_restore_rejects_approval_that_precedes_its_request():
-    runtime = _runtime()
-    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
-    runtime.request_model(run, [SEND])
-    runtime.accept_model_turn(
-        run,
-        AgentModelTurn(tool_calls=[AgentToolCall(id="send-1", name="send_message")]),
-    )
-    payload = run.model_dump(mode="json")
-    request_index = next(
-        index
-        for index, event in enumerate(payload["events"])
-        if event["type"] == "tool.requested"
-    )
-    approval_index = next(
-        index
-        for index, event in enumerate(payload["events"])
-        if event["type"] == "approval.required"
-    )
-    payload["events"][request_index], payload["events"][approval_index] = (
-        payload["events"][approval_index],
-        payload["events"][request_index],
-    )
-    for sequence, event in enumerate(payload["events"], start=1):
-        event["sequence"] = sequence
-
-    with pytest.raises(ValidationError, match="does not match an external call"):
-        AgentRun.model_validate(payload)
 
 
 def test_mismatched_tool_result_does_not_advance_the_run():
@@ -502,26 +445,6 @@ def test_abandoned_run_does_not_leak_through_repeat_tracking():
     assert identity not in runtime._call_counts_by_run
 
 
-def test_restored_run_with_tool_history_forces_tools_off_synthesis():
-    first_runtime = _runtime()
-    run = first_runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
-    first_runtime.request_model(run, [READ])
-    first_runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
-    first_runtime.accept_tool_result(
-        run, AgentToolResult(call_id="call-1", content="contents")
-    )
-    restored = AgentRun.model_validate_json(run.model_dump_json())
-
-    second_runtime = _runtime()
-    visible = second_runtime.request_model(restored, [READ])
-
-    assert visible == []
-    assert restored.final_synthesis is True
-    assert restored.events[-2].data["reason"] == (
-        "repeat_history_unavailable_after_restore"
-    )
-
-
 def test_tool_budget_reserves_a_tools_disabled_final_synthesis():
     profile = AgentProfile(
         name="one-round",
@@ -570,99 +493,27 @@ def test_cancel_is_idempotent_and_clears_pending_state():
     assert [event.type for event in run.events].count("run.cancelled") == 1
 
 
-def test_restored_run_rejects_noncontiguous_event_sequences():
-    run = _runtime().create_run(model="minicpm5-2b-4bit", goal="Read")
-    payload = run.model_dump(mode="json")
-    payload["events"][0]["sequence"] = 5
-
-    with pytest.raises(ValidationError, match="event sequences must be contiguous"):
-        AgentRun.model_validate(payload)
-
-
-def test_restored_run_rejects_malformed_tool_event_metadata():
-    runtime = _runtime()
-    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
-    runtime.request_model(run, [READ])
-    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
-    payload = run.model_dump(mode="json")
-    payload["events"][-1]["data"]["call"] = "not-an-object"
-
-    with pytest.raises(ValidationError, match="must contain a call object"):
-        AgentRun.model_validate(payload)
-
-
-def test_restored_run_rejects_raw_pending_arguments():
-    runtime = _runtime()
-    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
-    runtime.request_model(run, [READ])
-    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call(path="a.md")]))
-    payload = run.model_dump(mode="json")
-    payload["pending_call"]["arguments"] = {"token": "must-not-persist"}
-
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        AgentRun.model_validate(payload)
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        ("model_turns", 0, "model_turns does not match"),
-        ("tool_rounds", 0, "tool_rounds does not match"),
-        ("used_call_ids", [], "used_call_ids does not match"),
-        ("status", "completed", "inactive run cannot retain"),
-    ],
-)
-def test_restored_run_rejects_state_that_disagrees_with_events(field, value, message):
-    runtime = _runtime()
-    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
-    runtime.request_model(run, [READ])
-    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
-    payload = run.model_dump(mode="json")
-    payload[field] = value
-
-    with pytest.raises(ValidationError, match=message):
-        AgentRun.model_validate(payload)
-
-
-def test_restored_run_rejects_a_weakened_model_profile():
-    run = _runtime().create_run(model="minicpm5-2b-4bit", goal="Read")
-    payload = run.model_dump(mode="json")
-    payload["profile"]["max_visible_tools"] = 7
-
-    with pytest.raises(ValidationError, match="run profile does not match"):
-        AgentRun.model_validate(payload)
-
-
 def test_run_has_no_public_event_append_escape_hatch():
     run = _runtime().create_run(model="minicpm5-2b-4bit", goal="Read")
     assert not hasattr(run, "append_event")
-
-
-def test_restore_rejects_extra_sensitive_event_fields():
-    runtime = _runtime()
-    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
-    runtime.request_model(run, [READ])
-    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call(token="secret")]))
-    payload = run.model_dump(mode="json")
-    payload["events"][-1]["data"]["call"]["arguments"] = {"token": "secret"}
-
-    with pytest.raises(ValidationError, match="unexpected payload fields|malformed"):
-        AgentRun.model_validate(payload)
 
 
 def test_transition_rejects_a_run_not_created_by_runtime():
     profile = resolve_agent_profile("minicpm5-2b-4bit")
     run = AgentRun(model="minicpm5-2b-4bit", goal="Read", profile=profile)
 
-    with pytest.raises(AgentRuntimeError, match="not created by AgentRuntime"):
+    with pytest.raises(AgentRuntimeError, match="not owned by this AgentRuntime"):
         _runtime().request_model(run, [READ])
+
+    with pytest.raises(AgentRuntimeError, match="not owned by this AgentRuntime"):
+        _runtime().cancel(run)
 
 
 def test_event_history_and_payload_are_immutable_to_consumers():
     run = _runtime().create_run(model="minicpm5-2b-4bit", goal="Read")
     event = run.events[0]
 
-    with pytest.raises(ValidationError, match="Field is frozen"):
+    with pytest.raises(ValidationError, match="frozen"):
         run.events = ()
     with pytest.raises(ValidationError, match="Instance is frozen"):
         event.sequence = 9
@@ -677,9 +528,9 @@ def test_reducer_safety_collections_are_immutable_to_consumers():
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
     runtime.request_model(run, [READ])
 
-    with pytest.raises(ValidationError, match="Field is frozen"):
+    with pytest.raises(ValidationError, match="frozen"):
         run.visible_tools = (*run.visible_tools, SEND)
-    with pytest.raises(ValidationError, match="Field is frozen"):
+    with pytest.raises(ValidationError, match="frozen"):
         run.used_call_ids = ()
 
     output = runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
@@ -688,7 +539,7 @@ def test_reducer_safety_collections_are_immutable_to_consumers():
     assert output.call is not None
     assert output.call.arguments == {}
 
-    with pytest.raises(ValidationError, match="Field is frozen"):
+    with pytest.raises(ValidationError, match="frozen"):
         run.pending_call = AgentToolCall(id="rewritten", name="send_message")
     with pytest.raises(ValidationError, match="Instance is frozen"):
         run.pending_call.id = "rewritten"

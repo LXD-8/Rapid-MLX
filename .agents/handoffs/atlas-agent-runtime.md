@@ -18,17 +18,14 @@
   event stream. Request events retain call identity and argument names; result
   events retain size, execution/error state, and an optional producer-authored
   safe summary.
-- Call IDs are single-use, approvals match the exact pending ID, and restored
-  event histories must be contiguous from sequence one. Restore also
-  cross-checks the model profile, budgets, counters, active policy, pending
-  identity/risk, and terminal data against the immutable event history.
+- Call IDs are single-use and approvals match the exact pending ID. External
+  calls remain runtime-private and are released to an executor only after a
+  positive approval.
 - Tool risk is mandatory at the registry boundary. Repeat fingerprints are
-  held only inside the live runtime and are never serialized. Restored runs
-  with prior tool history therefore force a tools-off synthesis turn. Weak
-  tracking references prevent abandoned runs from being retained in memory.
+  held only inside the live runtime and are never serialized. Weak tracking
+  references prevent abandoned runs from being retained in memory.
 - Result metadata distinguishes executed calls from denied/loop-blocked calls;
-  restore replays every external action and requires a prior exact approval for
-  every executed side effect. Approval input is a strict Python boolean.
+  approval input is a strict Python boolean.
 - MiniCPM5-2B defaults are six visible tools, eight tool rounds, one call per
   model turn, and two identical calls before forced final synthesis.
 - Focused unit tests, Ruff, and focused mypy pass.
@@ -44,7 +41,7 @@ framework to the runtime kernel.
 
 ## Next concrete action
 
-Add the authenticated Server adapter as a separate PR: an atomic run store,
+Add the authenticated Server adapter as a separate PR: a bounded in-memory run store,
 create/get/events/approval/result/cancel endpoints, and a model-turn adapter
 over the existing generation path. Do not expose endpoints until a created run
 can make progress end to end. Follow with a Desktop client migration behind a
@@ -54,10 +51,8 @@ rollback feature flag, then physical 8 GB / 16 GB qualification.
 
 - Model generation is still route-owned; extracting a reusable internal
   generation service is preferable to making an in-process HTTP call.
-- Durable SQLite storage needs migration and corruption tests; P0 deliberately
-  makes no crash-durability claim.
-- An in-flight call's raw payload is adapter-owned and cannot resume after a
-  process restart; recovery must fail that run safely rather than execute the
-  persisted metadata-only call.
+- P0 deliberately makes no crash-durability claim. A process restart terminates
+  in-flight runs; durable recovery would require a separate reviewed replay and
+  migration design.
 - Risk classification must come from the registry snapshot the model saw, not
   from a later client-supplied tool definition.

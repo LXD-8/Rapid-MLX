@@ -7,7 +7,7 @@ import hashlib
 import json
 import weakref
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import JsonValue
 
@@ -36,6 +36,12 @@ class AgentRuntimeOutput:
 
     call: AgentToolCall | None = None
     observation: AgentToolResult | None = None
+
+
+@dataclass
+class _LiveRunState:
+    call_counts: dict[str, int] = field(default_factory=dict)
+    pending_side_effect_call: AgentToolCall | None = None
 
 
 def _append_event(
@@ -97,14 +103,14 @@ class AgentRuntime:
 
         self._clock = clock or time.time
         self._call_counts_by_run: dict[
-            int, tuple[weakref.ReferenceType[AgentRun], dict[str, int]]
+            int, tuple[weakref.ReferenceType[AgentRun], _LiveRunState]
         ] = {}
 
     def _is_tracked(self, run: AgentRun) -> bool:
         entry = self._call_counts_by_run.get(id(run))
         return entry is not None and entry[0]() is run
 
-    def _track_run(self, run: AgentRun) -> dict[str, int]:
+    def _track_run(self, run: AgentRun) -> _LiveRunState:
         key = id(run)
 
         def discard(reference: weakref.ReferenceType[AgentRun]) -> None:
@@ -112,9 +118,15 @@ class AgentRuntime:
             if current is not None and current[0] is reference:
                 self._call_counts_by_run.pop(key, None)
 
-        counts: dict[str, int] = {}
-        self._call_counts_by_run[key] = (weakref.ref(run, discard), counts)
-        return counts
+        state = _LiveRunState()
+        self._call_counts_by_run[key] = (weakref.ref(run, discard), state)
+        return state
+
+    def _live_state(self, run: AgentRun) -> _LiveRunState:
+        entry = self._call_counts_by_run.get(id(run))
+        if entry is None or entry[0]() is not run:
+            raise AgentRuntimeError("run is not owned by this AgentRuntime")
+        return entry[1]
 
     def create_run(
         self,
@@ -160,20 +172,6 @@ class AgentRuntime:
         selected = run.profile
         self._require_status(run, AgentRunStatus.READY)
         self._require_no_pending_call(run)
-
-        restored_without_repeat_history = (
-            not self._is_tracked(run) and run.tool_rounds > 0
-        )
-        if restored_without_repeat_history and not run.final_synthesis:
-            object.__setattr__(run, "final_synthesis", True)
-            _append_event(
-                run,
-                "synthesis.required",
-                {"reason": "repeat_history_unavailable_after_restore"},
-                now=self._clock(),
-            )
-        if not self._is_tracked(run):
-            self._track_run(run)
 
         already_final = run.final_synthesis
         final_synthesis = already_final or run.tool_rounds >= selected.max_tool_rounds
@@ -261,12 +259,8 @@ class AgentRuntime:
         object.__setattr__(run, "used_call_ids", (*run.used_call_ids, call.id))
 
         fingerprint = _call_fingerprint(call)
-        entry = self._call_counts_by_run.get(id(run))
-        counts = (
-            entry[1]
-            if entry is not None and entry[0]() is run
-            else self._track_run(run)
-        )
+        state = self._live_state(run)
+        counts = state.call_counts
         count = counts.get(fingerprint, 0) + 1
         counts[fingerprint] = count
         if count > selected.repeated_call_limit:
@@ -322,6 +316,7 @@ class AgentRuntime:
             now=self._clock(),
         )
         if risk.requires_approval:
+            state.pending_side_effect_call = call
             object.__setattr__(run, "status", AgentRunStatus.AWAITING_APPROVAL)
             _append_event(
                 run,
@@ -331,7 +326,8 @@ class AgentRuntime:
             )
         else:
             object.__setattr__(run, "status", AgentRunStatus.AWAITING_TOOL_RESULT)
-        return AgentRuntimeOutput(call=call)
+            return AgentRuntimeOutput(call=call)
+        return None
 
     def resolve_approval(
         self,
@@ -346,10 +342,14 @@ class AgentRuntime:
             raise AgentRuntimeError("approved must be a boolean")
         self._require_status(run, AgentRunStatus.AWAITING_APPROVAL)
         call = self._pending_call(run)
+        state = self._live_state(run)
         if call_id != call.id:
             raise AgentRuntimeError(
                 f"approval {call_id!r} does not match pending call {call.id!r}"
             )
+        executable = state.pending_side_effect_call
+        if approved and (executable is None or executable.id != call.id):
+            raise AgentRuntimeError("approved call payload is unavailable")
         _append_event(
             run,
             "approval.resolved",
@@ -357,8 +357,11 @@ class AgentRuntime:
             now=self._clock(),
         )
         if approved:
+            state.pending_side_effect_call = None
             object.__setattr__(run, "status", AgentRunStatus.AWAITING_TOOL_RESULT)
-            return None
+            assert executable is not None
+            return AgentRuntimeOutput(call=executable)
+        state.pending_side_effect_call = None
         object.__setattr__(run, "status", AgentRunStatus.AWAITING_TOOL_RESULT)
         denied = AgentToolResult(
             call_id=call.id,
@@ -402,6 +405,7 @@ class AgentRuntime:
             AgentRunStatus.CANCELLED,
         }:
             return
+        self._live_state(run)
         object.__setattr__(run, "status", AgentRunStatus.CANCELLED)
         object.__setattr__(run, "pending_call", None)
         object.__setattr__(run, "pending_risk", None)
@@ -458,14 +462,8 @@ class AgentRuntime:
         if run.pending_call is not None:
             raise AgentRuntimeError("run still has a pending tool call")
 
-    @staticmethod
-    def _require_status(run: AgentRun, expected: AgentRunStatus) -> None:
-        if not run.events:
-            raise AgentRuntimeError("run was not created by AgentRuntime")
-        try:
-            run._validate_restored_state()
-        except (KeyError, TypeError, ValueError) as exc:
-            raise AgentRuntimeError(f"run state is inconsistent: {exc}") from exc
+    def _require_status(self, run: AgentRun, expected: AgentRunStatus) -> None:
+        self._live_state(run)
         if run.status is not expected:
             raise AgentRuntimeError(
                 f"run status must be {expected.value!r}; got {run.status.value!r}"

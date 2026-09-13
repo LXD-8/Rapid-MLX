@@ -7,6 +7,7 @@ can share one state machine without sharing implementation language.
 """
 
 from .models import (
+    AgentEvent,
     AgentModelTurn,
     AgentProfile,
     AgentRun,
@@ -20,6 +21,7 @@ from .profiles import resolve_agent_profile
 from .runtime import AgentRuntime, AgentRuntimeError, AgentRuntimeOutput
 
 __all__ = [
+    "AgentEvent",
     "AgentModelTurn",
     "AgentProfile",
     "AgentRun",
