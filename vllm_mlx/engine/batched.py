@@ -18,7 +18,6 @@ import copy
 import functools
 import json
 import logging
-import os
 import threading
 import time
 import uuid
@@ -962,7 +961,6 @@ def _should_start_qwen36_native_text_cache(
         and config_model_type == "qwen3_5_moe"
         and spec_decode == "none"
         and _supports_qwen36_native_text_cache(language_model)
-        and os.environ.get("RAPID_MLX_QWEN36_NATIVE_TEXT_CACHE", "1") != "0"
     )
 
 
@@ -1885,7 +1883,7 @@ class BatchedEngine(BaseEngine):
         )
         await self._mllm_scheduler.start()
 
-        config = self._mllm_instance.config
+        config = getattr(self._mllm_instance, "config", None)
         config_model_type = (
             config.get("model_type")
             if isinstance(config, dict)
@@ -1897,7 +1895,7 @@ class BatchedEngine(BaseEngine):
             config_model_type=config_model_type,
             arrays_cache_compat=arrays_cache_compat,
             spec_decode=spec_decode,
-            no_hybrid=self._no_hybrid,
+            no_hybrid=getattr(self, "_no_hybrid", False),
         ):
             await self._start_qwen36_native_text_engine(language_model)
 

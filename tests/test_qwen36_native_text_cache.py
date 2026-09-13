@@ -153,7 +153,7 @@ def test_eligibility_is_pinned_to_qualified_qwen36_geometry():
     assert _supports_qwen36_native_text_cache(model) is False
 
 
-def test_start_gate_rejects_spec_decode_and_honors_kill_switch(monkeypatch):
+def test_start_gate_rejects_spec_decode_and_no_hybrid_override():
     args = SimpleNamespace(
         model_type="qwen3_5_moe_text",
         hidden_size=2048,
@@ -186,8 +186,6 @@ def test_start_gate_rejects_spec_decode_and_honors_kill_switch(monkeypatch):
     assert (
         _should_start_qwen36_native_text_cache(model, **kwargs, no_hybrid=True) is False
     )
-    monkeypatch.setenv("RAPID_MLX_QWEN36_NATIVE_TEXT_CACHE", "0")
-    assert _should_start_qwen36_native_text_cache(model, **kwargs) is False
 
 
 def test_request_routing_keeps_media_on_mllm_and_text_on_native_engine():

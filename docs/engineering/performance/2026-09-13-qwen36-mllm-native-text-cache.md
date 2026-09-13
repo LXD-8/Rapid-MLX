@@ -25,8 +25,8 @@ not load or copy a second set of weights.
 Enrollment fails closed on the exact qualified model geometry: 40 layers,
 30 linear-attention layers, 10 full-attention layers, 256 experts with top-8
 routing, and the measured GatedDeltaNet head dimensions. Speculative decoding
-and unknown layouts remain on the existing path. Set
-`RAPID_MLX_QWEN36_NATIVE_TEXT_CACHE=0` to disable the lane immediately.
+and unknown layouts remain on the existing path. The existing `--no-hybrid`
+operator override retains the prior multimodal-only path.
 
 The vision language module retains MRoPE position state on the model rather
 than in each cache. The wrapper therefore swaps and restores lane-local state
