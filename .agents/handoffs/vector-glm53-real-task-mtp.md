@@ -6,8 +6,8 @@ Atlas, for runtime architecture and dependency integration.
 
 ## Branch
 
-`docs/glm53-competitor-causal`, based on
-`origin/main@69cdecf7e` after qualification PR #3385 merged.
+`docs/glm53-followup-findings`, based on `origin/main@aa92dc238` after the
+competitor-causal record merged in PR #3389.
 
 ## Verified facts
 
@@ -42,6 +42,11 @@ Atlas, for runtime architecture and dependency integration.
   0.963x the qualified block-total 2 median. A single-token FFN compile spike
   was also AR-exact but converged within 0.0% to 0.8% of a warm uncompiled
   control and was rejected as immaterial.
+- Recurrent elementwise compilation was rejected after a six-pair structural
+  fixture run measured 0.995x overall despite two isolated 1.026x sub-operation
+  wins. Recurrent prefill slicing was rejected against current mlx-vlm: it was
+  only 1.005x at 2K and 1.025x at 4K on a production-shaped Q4 BF16 layer, and
+  changed output by 1.5259e-5 plus the final cache above 512 tokens.
 - MTP long-context peak Metal memory was 188.679 GB versus 184.141 GB for AR.
 
 ## Unresolved
@@ -50,6 +55,9 @@ Atlas, for runtime architecture and dependency integration.
 - Rapid still pins a released mlx-vlm version without these three upstream
   changes. No release dependency is available to integrate yet.
 - Creative prose still needs blind human review before any quality claim.
+- The Q4 target plus MTP reaches 188.679 GB peak Metal memory. The Studio had
+  only 23 GiB of cache-volume headroom during the follow-up, so a complete new
+  mixed-quant derivative cannot be staged without an explicit storage plan.
 
 ## Risks
 
@@ -57,10 +65,16 @@ Do not infer trajectory equivalence from oMLX's small throughput lead: even its
 same-width depth-1 path changed greedy reasoning and half the final answers.
 Do not vendor only part of the upstream three-PR chain; strict loading, safe
 fallback, and positioned rollback are separate necessary pieces.
+Do not transplant oMLX's older recurrent-slicing result without re-measuring
+current mlx-vlm; the optimized current kernel has a different crossover and
+did not preserve bit-exact state in the production-shape check.
 
 ## Next action
 
 Atlas should update the Rapid dependency only after a tagged mlx-vlm release
 contains #2231, #2232, and #2233. Re-run the six-task harness through Rapid and
 require 18/18 across three runs with AR-exact reasoning/final output before
-enabling GLM MTP experimentally.
+enabling GLM MTP experimentally. The next backbone experiment should pursue a
+material resident-size or dispatch reduction rather than another small graph
+compile; do not delete the only cached Q4 control to make room without explicit
+human authorization and a recovery plan.

@@ -191,6 +191,30 @@ Two narrowly scoped Rapid spikes did not clear the performance gate:
   differences versus an immediate uncompiled control were 0.0% to 0.8% and
   did not establish a material sustained win. The apparent early gain was
   consistent with lazy-kernel warm-up, so no runtime patch was proposed.
+- Compiling the elementwise work immediately around the recurrent kernel made
+  each of two production-shaped sub-operations 1.026x faster in isolation
+  (243.1 to 236.9 microseconds and 222.3 to 216.7 microseconds). The complete
+  five-layer GLM structural fixture did not retain that signal: six interleaved
+  512-token pairs measured 321.8 versus 325.6 tok/s, a 0.995x paired median,
+  with individual ratios from 0.931x to 1.024x. All sampled greedy fingerprints
+  matched. The full-model effect was both immaterial and unstable, so the
+  fusion was rejected.
+- Slicing the recurrent prefill into 512-token pieces was also re-measured
+  against current mlx-vlm rather than inferred from an older vendored runtime.
+  A production-shaped Q4 BF16 layer measured 41.17 versus 40.94 ms at 2,048
+  tokens (1.005x) and 82.88 versus 80.85 ms at 4,096 tokens (1.025x). At 1,024
+  tokens it regressed to 0.986x. For every width above 512, the maximum output
+  difference was 1.5259e-5 and the final recurrent cache was not bit-identical.
+  The current kernel therefore does not reproduce the older claim of a
+  bit-exact 30% win; no slicing patch was proposed.
+
+The 184-189 GB working set also makes host health part of the benchmark gate.
+A follow-up stock run produced only 0.382 tok/s while the 256 GiB host was
+actively swapping after concurrent large-model campaigns; it was discarded.
+Future measurements on this target must check both competing model processes
+and memory pressure, and should use the shared large-model lock. Process
+isolation alone is not enough when inactive model pages still push the target
+over physical memory.
 
 ## Reproduction
 
