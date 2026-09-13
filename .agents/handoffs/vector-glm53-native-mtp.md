@@ -46,11 +46,25 @@ Original compatibility work: `vector/glm53-native-mtp`. Follow-up qualification:
   control, median paired throughput improved 1.221x, and median category
   throughput reached 33.655 tok/s versus 31.813 tok/s for the same-width oMLX
   control. Peak Metal was 188.499 GB versus 184.147 GB for AR.
+- #2234 was subsequently closed without merge. A rebuilt candidate containing
+  current mlx-vlm main + #2206 + #2231, but no #2234, retained 6/6 task and
+  complete reasoning/final byte parity against its 6/6 AR control. Clean-run
+  per-task gains were 1.264x, 1.234x, 1.187x, 1.323x, 1.194x, and 1.070x
+  (1.214x median); median category throughput was 32.887 tok/s, 3.4% above the
+  same-width oMLX control. Peak Metal was 188.432 GB versus 184.141 GB for AR.
+  Two timing-contaminated repeats were excluded, but retained 12/12 exact task
+  and byte parity. #2234 contributed about another 2.8% in its first clean run
+  and is optional rather than a release dependency.
+- A same-load K=3 spike remained exact and improved median task throughput
+  1.030x over K=2, but regressed coding and creative writing by 3.6-3.7% while
+  improving instruction and knowledge by 7.4-8.6%. Keep K=2 as the qualified
+  default; treat adaptive depth as a separate follow-up.
 
 ## Unresolved
 
-- Wait for #2206, #2231, and #2234 to merge and appear in a tagged mlx-vlm
-  release. Do not vendor only part of the cache transaction.
+- Wait for #2206 and #2231 to merge and appear in a tagged mlx-vlm release. Do
+  not vendor only part of the cache transaction. #2234 is closed and is not a
+  dependency of the qualified path.
 - Connect that released path to Rapid's GLM serving lane and repeat the six-task
   gate through the Rapid server; direct mlx-vlm qualification is not sufficient
   evidence that the product integration preserves the gain.
@@ -70,8 +84,8 @@ Original compatibility work: `vector/glm53-native-mtp`. Follow-up qualification:
 
 ## Recommended next action
 
-Keep the legacy injector disabled. Once an mlx-vlm release contains #2206,
-#2231, and #2234, update Rapid's pin, connect the cache-owned path, and run the
+Keep the legacy injector disabled. Once an mlx-vlm release contains #2206 and
+#2231, update Rapid's pin, connect the cache-owned path, and run the
 exact six-task server gate in
 `docs/engineering/performance/2026-09-12-glm53-real-task-mtp.md` before any
 alias capability change. Treat oQ4e as a separate quantization-quality and

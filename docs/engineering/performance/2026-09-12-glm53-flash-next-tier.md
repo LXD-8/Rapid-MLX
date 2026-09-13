@@ -42,9 +42,21 @@ tok/s, 5.8% above the 31.813 tok/s same-width oMLX comparison. Peak Metal was
 188.499 GB versus 184.147 GB for AR.
 
 This supersedes the earlier performance/parity rejection, but it does not make
-MTP current Rapid production behavior. #2206, #2231, and #2234 remain upstream
-release dependencies. The complete commands, task rubric, and artifacts are
-recorded in `2026-09-12-glm53-real-task-mtp.md`.
+MTP current Rapid production behavior. The storage fusion PR #2234 was later
+closed without merge, so the release candidate was rebuilt from current
+mlx-vlm main plus #2206 and #2231 only. On a clean paired run, that candidate
+again passed 6/6 tasks and matched every complete AR reasoning and final
+response byte-for-byte. Per-task gains were 1.264x, 1.234x, 1.187x, 1.323x,
+1.194x, and 1.070x, for a 1.214x median. Median category throughput was 32.887
+tok/s, 3.4% above the 31.813 tok/s same-width oMLX comparison. Peak Metal was
+188.432 GB versus 184.141 GB for AR. Two additional MTP passes retained 12/12
+task and byte parity; their timing was excluded because concurrent pytest,
+Qwen3.6, and macOS media-analysis workloads started during measurement.
+
+The no-fusion result makes #2206 and #2231 the only upstream release
+dependencies. #2234 was worth about another 2.8% on the first clean run, but it
+is an optional follow-up rather than a blocker. The complete commands, task
+rubric, and artifacts are recorded in `2026-09-12-glm53-real-task-mtp.md`.
 
 ## Same-artifact runtime comparison
 
@@ -277,6 +289,15 @@ full heads-by-context intermediate. The published numbers use a different
 169 GiB oQ4e artifact, so they are architecture references rather than a fair
 Rapid throughput comparison.
 
+### Ollama
+
+Ollama 0.32.5 was checked on the same Studio, but no local Apple-resident
+GLM-5.3-Flash artifact was available for a same-host comparison. The official
+model page exposes only `glm-5.3-flash:cloud`, and `ollama list` contained no
+GLM-5.3 model. A request to that cloud tag would measure network and hosted
+service behavior rather than the local runtime, so no Ollama tok/s number is
+reported here.
+
 ## Local experiments and rejected shortcuts
 
 All timings below are fresh-process MLX measurements on Studio unless noted.
@@ -321,8 +342,9 @@ decision after upstream publishes a fixed revision.
 ## Implementation order and release gate
 
 1. Keep the fail-closed compatibility seam already merged in Rapid.
-2. Wait for an mlx-vlm release containing #2206, #2231, and #2234; do not pin
-   an untagged commit or vendor a partial transaction.
+2. Wait for an mlx-vlm release containing #2206 and #2231; do not pin an
+   untagged commit or vendor a partial transaction. #2234 closed without merge
+   and is not required by the qualified no-fusion path.
 3. Update Rapid's dependency and connect the released cache-owned GLM MTP path
    to the serving lane.
 4. Re-run the exact six-task gate through the Rapid OpenAI-compatible server,
@@ -341,5 +363,6 @@ decision after upstream publishes a fixed revision.
 - <https://github.com/Blaizzy/mlx-vlm/pull/2234>
 - <https://github.com/IngeniousIdiocy/ds4/blob/glm53-m3ultra/README.md>
 - <https://github.com/jundot/omlx/releases/tag/v0.6.4>
+- <https://ollama.com/library/glm-5.3-flash/tags>
 - <https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2>
 - `docs/benchmarks/recent-large-models-m3-ultra.md`
