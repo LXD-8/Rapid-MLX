@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-# Capture every ref first. Restricting the regex to a SHA would make a mutable
-# tag invisible and could let another valid occurrence satisfy ``seen``.
-USES_RE = re.compile(r"uses:\s*(actions/[\w-]+)@([^\s#]+)")
+ACTION_USE_RE = re.compile(r"(actions/[\w-]+)@(.+)")
 
 # These immutable SHAs were verified against the official action manifests;
 # each declares ``runs.using: node24``.  Updating one is an explicit dependency
@@ -25,8 +25,24 @@ NODE24_ACTIONS = {
 }
 
 
+def iter_uses(node: Any):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "uses" and isinstance(value, str):
+                yield value
+            yield from iter_uses(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from iter_uses(value)
+
+
 def assert_reviewed_node24_refs(path: Path, text: str, seen: set[str]) -> None:
-    for action, ref in USES_RE.findall(text):
+    workflow = yaml.safe_load(text)
+    for uses in iter_uses(workflow):
+        match = ACTION_USE_RE.fullmatch(uses)
+        if match is None:
+            continue
+        action, ref = match.groups()
         expected = NODE24_ACTIONS.get(action)
         if expected is None:
             continue
@@ -46,17 +62,22 @@ def test_reviewed_node24_action_pins_are_used_consistently() -> None:
 
 
 @pytest.mark.parametrize(
-    "ref",
+    "uses_line",
     (
-        "v7",
-        "043FB46D1A93C77AAE656E7C1C64A875D1FC6A0A",
-        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0",
+        "uses: actions/upload-artifact@v7",
+        'uses: "actions/upload-artifact@v7"',
+        "uses: 'actions/upload-artifact@v7'",
+        "uses: actions/upload-artifact@${{ github.ref }}",
+        "uses: actions/upload-artifact@043FB46D1A93C77AAE656E7C1C64A875D1FC6A0A",
+        "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0",
     ),
 )
-def test_mutable_or_malformed_targeted_action_ref_fails(ref: str) -> None:
+def test_mutable_quoted_dynamic_or_malformed_targeted_ref_fails(
+    uses_line: str,
+) -> None:
     with pytest.raises(AssertionError, match="uses unreviewed actions/upload-artifact"):
         assert_reviewed_node24_refs(
             Path("workflow.yml"),
-            f"- uses: actions/upload-artifact@{ref}",
+            f"jobs:\n  test:\n    steps:\n      - {uses_line}",
             set(),
         )
