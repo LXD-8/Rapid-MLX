@@ -1473,6 +1473,31 @@ def test_qsa_stage1_route_bypasses_reference_matmul(monkeypatch):
     }
 
 
+def test_qsa_stage1_unsupported_layout_falls_back_and_records_reason(monkeypatch):
+    args = _args(
+        indexer_budget=2,
+        indexer_compress_ratio=2,
+        rope_parameters={"rope_theta": 10_000_000, "partial_rotary_factor": 0.5},
+    )
+    indexer = QSAIndexer(args)
+    cache = QSAIndexCache(compress_ratio=2)
+    monkeypatch.setattr(qwen4_exp, "qsa_stage1_decline_reason", lambda *a, **k: None)
+    monkeypatch.setattr(qwen4_exp, "qsa_stage1_supported", lambda *a, **k: False)
+
+    selected = indexer(
+        mx.zeros((1, 6, args.hidden_size), dtype=mx.bfloat16),
+        cache,
+        physical_kv_length=6,
+    )
+    assert selected is not None
+    mx.eval(selected.token_indices, selected.valid)
+    assert qwen4_exp.qwen4_qsa_stage1_stats(indexer) == {
+        "route_constructions": 0,
+        "declines": 1,
+        "decline_reasons": {"unsupported layout": 1},
+    }
+
+
 def test_qsa_indexer_fail_closed_internal_invariants():
     args = _args(indexer_budget=8, indexer_compress_ratio=2)
     indexer = QSAIndexer(args)

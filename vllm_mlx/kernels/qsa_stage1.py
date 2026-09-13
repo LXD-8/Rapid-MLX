@@ -83,7 +83,7 @@ def qsa_stage1_decline_reason(
 def qsa_stage1_kernel_available() -> bool:
     """Return whether a Metal custom kernel can run in this process."""
 
-    return mx.metal.is_available() and mx.default_device() == mx.gpu
+    return bool(mx.metal.is_available() and mx.default_device() == mx.gpu)
 
 
 def qsa_stage1_supported(

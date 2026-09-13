@@ -84,7 +84,7 @@ not a headline throughput claim. The route therefore remains opt-in.
   rows. Sets are identical. Storage order differs, which is semantically
   neutral: dense attention scatters a set and both sparse attention consumers
   sort the physical block starts before dispatch.
-- 212 focused QSA/Qwen4, packaging, benchmark-contract, and environment-policy
+- 215 focused QSA/Qwen4, packaging, benchmark-contract, and environment-policy
   tests pass, including the existing dense, block-sparse, and indexed split-K
   paths.
 

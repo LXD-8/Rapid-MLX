@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from importlib.metadata import PackageNotFoundError
 
 import numpy as np
 import pytest
@@ -121,6 +122,54 @@ def test_stage1_gate_is_opt_in_and_machine_qualified(monkeypatch):
         mlx_version="0.32.2",
         metal_architecture="applegpu_g17s",
     )
+    assert (
+        qsa_stage1.qsa_stage1_decline_reason(
+            512,
+            65_024,
+            batch_size=1,
+            training=True,
+            mlx_version="0.32.2",
+            metal_architecture="applegpu_g15d",
+        )
+        == "training"
+    )
+    monkeypatch.setattr(qsa_stage1.mx.metal, "is_available", lambda: False)
+    assert (
+        qsa_stage1.qsa_stage1_decline_reason(
+            512,
+            65_024,
+            batch_size=1,
+            mlx_version="0.32.2",
+            metal_architecture="applegpu_g15d",
+        )
+        == "Metal runtime unavailable"
+    )
+
+
+def test_stage1_runtime_receipts_and_metadata_fallbacks(monkeypatch):
+    qsa_stage1._mlx_version.cache_clear()
+    monkeypatch.setattr(qsa_stage1, "version", lambda _: "test-mlx")
+    assert qsa_stage1._mlx_version() == "test-mlx"
+
+    qsa_stage1._mlx_version.cache_clear()
+
+    def missing(_: str):
+        raise PackageNotFoundError
+
+    monkeypatch.setattr(qsa_stage1, "version", missing)
+    assert qsa_stage1._mlx_version() == "unknown"
+    qsa_stage1._mlx_version.cache_clear()
+
+    qsa_stage1._metal_architecture.cache_clear()
+    monkeypatch.setattr(
+        qsa_stage1.mx, "device_info", lambda: {"architecture": "test-metal"}
+    )
+    assert qsa_stage1._metal_architecture() == "test-metal"
+    qsa_stage1._metal_architecture.cache_clear()
+
+    receipt = qsa_stage1.qsa_stage1_kernel_cache_info()
+    assert receipt.currsize >= 0
+    assert receipt.maxsize == 32
 
 
 def test_stage1_matches_eager_with_padding_tails_and_ties():
@@ -175,3 +224,35 @@ def test_stage1_rejects_unsupported_shapes():
         qsa_stage1.qsa_stage1_select(
             q, pooled, positions, block_topk=8, compress_ratio=4
         )
+
+
+def test_stage1_support_gate_rejects_each_static_invariant(monkeypatch):
+    q = mx.zeros((1, 2, 4, 8), dtype=mx.float16)
+    pooled = mx.zeros((1, 9, 8), dtype=mx.float16)
+    positions = mx.zeros((1, 2), dtype=mx.int32)
+
+    monkeypatch.setattr(qsa_stage1, "qsa_stage1_kernel_available", lambda: False)
+    assert not qsa_stage1.qsa_stage1_supported(
+        q, pooled, positions, block_topk=4, compress_ratio=4
+    )
+    monkeypatch.setattr(qsa_stage1, "qsa_stage1_kernel_available", lambda: True)
+
+    invalid = [
+        (q.reshape(2, 4, 8), pooled, positions),
+        (q, pooled, mx.zeros((1, 1), dtype=mx.int32)),
+        (q, mx.zeros((2, 9, 8), dtype=mx.float16), positions),
+        (q, mx.zeros((1, 9, 7), dtype=mx.float16), positions),
+        (q.astype(mx.int32), pooled, positions),
+        (q, pooled, positions.astype(mx.uint32)),
+    ]
+    for invalid_q, invalid_pooled, invalid_positions in invalid:
+        assert not qsa_stage1.qsa_stage1_supported(
+            invalid_q,
+            invalid_pooled,
+            invalid_positions,
+            block_topk=4,
+            compress_ratio=4,
+        )
+
+    with pytest.raises(ValueError, match="threadgroup width"):
+        qsa_stage1._stage1_kernel(1, 1, 2048, 4, mx.float32, mx.float32)
