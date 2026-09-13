@@ -768,7 +768,7 @@ def score_task(
             re.IGNORECASE | re.DOTALL,
         )
         payment_cause_is_negated = re.search(
-            r"(?:payment|checkout)[^.!?;]{0,80}(?:error|failure)s?[^.!?;]{0,30}(?:(?:was|is|were|are)\s+(?:not|never)[^.!?;]{0,20}(?:cause|driver|responsib)|did\s+not\s+cause)",
+            r"(?:payment|checkout)[^.!?;]{0,80}(?:error|failure)s?[^.!?;]{0,30}(?:(?:was|is|were|are)\s+(?:not|never)[^.!?;]{0,20}(?:cause|driver|responsib)|(?:did|do|does)\s+not\s+(?:cause|drive|account|explain)|(?:didn't|don't|doesn't)\s+(?:cause|drive|account|explain))",
             artifact_text,
             re.IGNORECASE | re.DOTALL,
         )
@@ -808,7 +808,7 @@ def score_task(
             re.IGNORECASE | re.DOTALL,
         )
         cedar_is_longer = re.search(
-            r"\bcedar(?: mini)?\b\s+(?:actually\s+)?(?:lasts?|is|runs?)\s+(?!not\b)(?:\w+\s+){0,4}longer\b|\bcedar(?: mini)?\b\s+(?:actually\s+)?outlasts?\s+(?:pine(?: mini)?|it)\b",
+            r"\bcedar(?: mini)?\b\s+(?:actually\s+)?(?:(?:lasts?|is|runs?)\s+(?!not\b)(?:\w+\s+){0,4}longer\b|(?:has|offers)\s+(?:the\s+)?longer\b|outlasts?\s+(?:pine(?: mini)?|it)\b)",
             final,
             re.IGNORECASE,
         )
