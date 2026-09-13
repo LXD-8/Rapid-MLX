@@ -361,11 +361,12 @@ file-size, process-count, descriptor, and wall-time limits.
 
 ## Next engineering gate
 
-The transaction and safe fallback now exist upstream. Atlas should not vendor a
+The cache-owned transaction now exists upstream. Atlas should not vendor a
 partial copy or point a release at an untagged Git commit. Once mlx-vlm ships a
-release containing #2231, #2232, #2233, and #2234, update Rapid's pin, run this exact
-six-task gate through the Rapid server, and only then enable GLM MTP. The next
-performance investigation should target exact verify/backbone dispatch cost.
-The same-width result shows that deeper drafting is not the main competitor
+release containing #2206, #2231, and #2234, update Rapid's pin, run this exact
+six-task gate through the Rapid server, and only then enable GLM MTP. The
+legacy #2232/#2233 chain remains a smaller fallback if #2206 does not land.
+The next performance investigation should target exact backbone dispatch cost;
+the same-width result shows that deeper drafting is not the main competitor
 gap. Do not adopt a numerically different verify path without first recovering
 repeated temperature-zero determinism and 18/18 quality.
