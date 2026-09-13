@@ -127,12 +127,8 @@ def main() -> None:
                 "event": "summary",
                 "pairs": len(rows),
                 "all_exact": True,
-                "off_median_tps": statistics.median(
-                    row["off_tps"] for row in rows
-                ),
-                "on_median_tps": statistics.median(
-                    row["on_tps"] for row in rows
-                ),
+                "off_median_tps": statistics.median(row["off_tps"] for row in rows),
+                "on_median_tps": statistics.median(row["on_tps"] for row in rows),
                 "paired_speedup_median": statistics.median(paired_ratios),
             },
             sort_keys=True,

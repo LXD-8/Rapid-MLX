@@ -26,9 +26,10 @@ _QUALIFIED_NUM_EXPERTS = 256
 _QUALIFIED_TOP_K = 8
 _LOCK = threading.Lock()
 _INSTALLED = False
-_ENABLED = os.environ.get(
-    "RAPID_MLX_QWEN35_EAGER_LAYER_DISPATCH", "1"
-).strip().lower() not in _FALSE_VALUES
+_ENABLED = (
+    os.environ.get("RAPID_MLX_QWEN35_EAGER_LAYER_DISPATCH", "1").strip().lower()
+    not in _FALSE_VALUES
+)
 
 
 def _is_qualified_layer(layer) -> bool:
