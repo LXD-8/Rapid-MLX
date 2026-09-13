@@ -4780,3 +4780,230 @@ def test_promoted_ceiling_records_and_selects_deeper_depths_lazily():
     # Selection stays within the promoted ceiling, never past it.
     assert 0 <= ctrl.pick_k() <= 3
     reset_controllers()
+
+
+# ---------------------------------------------------------------------------
+# CopyDraftGate -- is this turn's copy-draft worth its verify block?
+# ---------------------------------------------------------------------------
+
+
+def _feed(gate, *, copy_rounds=(), base_rounds=()):
+    """Fold ``(committed, round_ms)`` rounds into the gate's two series."""
+    for committed, ms in base_rounds:
+        gate.observe(is_copy_draft=False, committed=committed, round_ms=ms)
+    for committed, ms in copy_rounds:
+        gate.observe(is_copy_draft=True, committed=committed, round_ms=ms)
+
+
+def test_copy_draft_gate_stays_open_until_both_series_are_sampled():
+    """An unproven gate never refuses: the only way to price a copy-draft is
+    to verify one, so a turn that has not yet run three of each kind is given
+    the benefit of the doubt."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_GATE_MIN_SAMPLES,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    assert gate.allow() is True
+
+    # Terrible copy-drafts, but only two of them, and no baseline at all.
+    _feed(gate, copy_rounds=[(1, 400.0)] * (COPY_DRAFT_GATE_MIN_SAMPLES - 1))
+    assert gate.allow() is True
+
+    # Baseline sampled, copy series still one short.
+    _feed(gate, base_rounds=[(2, 50.0)] * COPY_DRAFT_GATE_MIN_SAMPLES)
+    assert gate.allow() is True
+    assert gate.declines == 0
+
+
+def test_copy_draft_gate_refuses_copy_drafts_that_lose_on_throughput():
+    """The Qwen3.6-27B shape: a copy-draft accepts ~4 rows and still pays for
+    the whole 11-row verify, so it commits fewer tokens per millisecond than
+    the K=1 rounds it replaced."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    gate = CopyDraftGate()
+    # 5 committed per 117 ms copy-draft round against 1.95 per 37 ms MTP round.
+    _feed(gate, copy_rounds=[(5, 117.0)] * 3, base_rounds=[(2, 37.0)] * 3)
+    copy_rate, base_rate = gate.rates()
+    assert copy_rate < base_rate
+
+    assert gate.allow() is False
+    assert gate.declines == 1
+
+
+def test_copy_draft_gate_admits_copy_drafts_that_win_on_throughput():
+    """The Qwen3.8-27B shape: ~10 committed rows on the ``quantized_matmul``
+    plateau beat 1.9 committed rows at K=1, so the gate stays out of the way."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    gate = CopyDraftGate()
+    _feed(gate, copy_rounds=[(10, 342.0)] * 3, base_rounds=[(2, 92.0)] * 3)
+    copy_rate, base_rate = gate.rates()
+    assert copy_rate > base_rate
+
+    assert gate.allow() is True
+    assert gate.declines == 0
+    assert gate.probes == 0
+
+
+def test_copy_draft_gate_probes_a_standing_refusal_with_exponential_backoff():
+    """A refusal is a measurement, and measurements go stale: a turn that
+    stops quoting the prompt and starts again has to be able to win the gate
+    back. So a standing refusal is re-tested on a doubling cadence rather
+    than being permanent."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_GATE_PROBE_INTERVAL,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    _feed(gate, copy_rounds=[(2, 300.0)] * 3, base_rounds=[(2, 40.0)] * 3)
+
+    base = COPY_DRAFT_GATE_PROBE_INTERVAL
+    verdicts = [gate.allow() for _ in range(base)]
+    assert verdicts == [False] * (base - 1) + [True]
+    assert gate.probes == 1
+
+    # The cadence doubled, so the next probe is twice as far away.
+    verdicts = [gate.allow() for _ in range(2 * base)]
+    assert verdicts == [False] * (2 * base - 1) + [True]
+    assert gate.probes == 2
+    assert gate.declines == (base - 1) + (2 * base - 1)
+
+
+def test_copy_draft_gate_resets_its_cadence_when_copy_drafts_win_again():
+    """Winning on merit clears the backoff, so a later downturn is re-tested
+    at the base interval instead of inheriting a long-backed-off cadence."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_GATE_PROBE_INTERVAL,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    _feed(gate, copy_rounds=[(2, 300.0)] * 3, base_rounds=[(2, 40.0)] * 3)
+    for _ in range(2 * COPY_DRAFT_GATE_PROBE_INTERVAL):
+        gate.allow()
+    assert gate.probes >= 1
+
+    # A run of good copy-draft rounds flips the comparison back.
+    _feed(gate, copy_rounds=[(20, 300.0)] * 8)
+    assert gate.allow() is True
+
+    _feed(gate, copy_rounds=[(1, 300.0)] * 12)
+    verdicts = [gate.allow() for _ in range(COPY_DRAFT_GATE_PROBE_INTERVAL)]
+    assert verdicts[-1] is True
+    assert verdicts[:-1] == [False] * (COPY_DRAFT_GATE_PROBE_INTERVAL - 1)
+
+
+def test_copy_draft_gate_ignores_rounds_that_committed_nothing():
+    """A round that delivered no token, or whose clock read non-positive, is
+    not a throughput sample -- folding it in would divide by a number the
+    round never measured."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    gate = CopyDraftGate()
+    _feed(
+        gate,
+        copy_rounds=[(0, 300.0), (5, 0.0), (5, -1.0)],
+        base_rounds=[(0, 40.0), (2, 0.0)],
+    )
+    assert gate.rates() == (0.0, 0.0)
+    # Still undersampled, therefore still open.
+    assert gate.allow() is True
+
+
+def test_generator_prices_both_round_kinds_into_the_copy_draft_gate(monkeypatch):
+    """The gate is fed from both round paths, in delivered tokens.
+
+    A comparison is only as good as its two inputs: a copy-draft round is
+    charged its verify wall time, and the rounds it displaces are charged
+    their forward plus the drafter cost carried into them. Pin that both
+    arrive, and that ``committed`` is the count the caller actually received.
+    """
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
+    monkeypatch.setattr(
+        generator_mod, "_safe_prompt_lookup_draft_count", lambda _c, n, **_kw: n
+    )
+
+    seen: list[tuple[bool, int]] = []
+    original = CopyDraftGate.observe
+
+    def _spy(self, *, is_copy_draft, committed, round_ms):
+        seen.append((is_copy_draft, committed))
+        assert round_ms > 0.0
+        return original(
+            self, is_copy_draft=is_copy_draft, committed=committed, round_ms=round_ms
+        )
+
+    monkeypatch.setattr(CopyDraftGate, "observe", _spy)
+
+    emitted = list(
+        mtp_generate_step(
+            mx.array([7, 8, 20, 21], dtype=mx.uint32),
+            _CacheAdvancingQwen35Model(
+                backbone_outputs=[0, 0, 0, 7, 8, 20, 21, 22],
+                mtp_outputs=[0, 0, 0, 99, 20, 21],
+            ),
+            max_tokens=3,
+            max_k=1,
+            disable_auto_k=True,
+            prompt_cache=[_CountingKVCache(), _CountingKVCache()],
+            accept_counter=MTPAcceptCounter(),
+            timing_stats={},
+        )
+    )
+
+    assert seen, "the gate was never priced"
+    assert all(committed >= 1 for _kind, committed in seen)
+    # Every delivered token is accounted for by exactly one priced round.
+    assert sum(committed for _kind, committed in seen) == len(emitted)
+
+
+def test_generator_drops_copy_drafts_the_gate_refuses(monkeypatch):
+    """A refused proposal is dropped, not narrowed, and is booked separately
+    from a cache fall-through so an operator can tell "this turn's copies did
+    not pay" from "this target cannot unwind a copy"."""
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
+    monkeypatch.setattr(
+        generator_mod, "_safe_prompt_lookup_draft_count", lambda _c, n, **_kw: n
+    )
+    monkeypatch.setattr(CopyDraftGate, "allow", lambda _self: False)
+
+    timing: dict[str, float] = {}
+    list(
+        mtp_generate_step(
+            mx.array([7, 8, 20, 21], dtype=mx.uint32),
+            _CacheAdvancingQwen35Model(
+                backbone_outputs=[0, 0, 0, 7, 8, 20, 21, 22],
+                mtp_outputs=[0, 0, 0, 99, 20, 21],
+            ),
+            max_tokens=3,
+            max_k=1,
+            disable_auto_k=True,
+            prompt_cache=[_CountingKVCache(), _CountingKVCache()],
+            accept_counter=MTPAcceptCounter(),
+            timing_stats=timing,
+        )
+    )
+
+    assert timing["prompt_lookup_ev_declines"] >= 1
+    assert timing.get("prompt_lookup_proposals", 0.0) == 0.0
+    assert timing.get("prompt_lookup_cache_fallthroughs", 0.0) == 0.0
