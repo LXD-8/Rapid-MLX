@@ -197,11 +197,17 @@ def test_streaming_finalize_matches_non_streaming() -> None:
         ("boolean", "\n true \n", True),
         ("integer", " 42 ", 42),
         ("number", " 1.5 ", 1.5),
-        # ``null`` is matched WITHOUT trimming (see _convert_param_value):
-        # it runs before the type dispatch, and trimming it would widen a
-        # pre-existing stream/non-stream divergence in the close path.
+        # ``null`` is matched WITHOUT trimming in the GLOBAL check (see
+        # _convert_param_value): that check also sees string-typed values,
+        # where trimming would widen a pre-existing stream/non-stream
+        # divergence in the close path. For a string parameter the padding is
+        # therefore payload -- the deliberate contract change of this PR.
         ("string", " null ", " null "),
         ("string", "null", None),
+        # Past the string branch the padding cannot be payload, so the
+        # keyword is recognised there instead.
+        ("boolean", " null ", None),
+        ("integer", " null ", None),
     ],
 )
 def test_padded_scalars_still_convert(declared_type, emitted, expected) -> None:
@@ -323,3 +329,46 @@ def test_padded_json_quoted_string_keeps_stream_parity(wire: str) -> None:
     streamed = _stream_arguments(chunks, request)
     assert streamed == _arguments("".join(chunks), request)
     assert streamed["x"] == json.loads(wire)
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        # The shape that made this worth a round of review: a nullable boolean
+        # whose padded `null` reached the boolean branch and became `False` --
+        # "no value" silently turning into "off".
+        ({"type": ["boolean", "null"]}, None),
+        ({"type": "null"}, None),
+        ({"type": "boolean"}, None),
+        ({"type": "integer"}, None),
+        # A string parameter keeps the padding: there it is payload.
+        ({"type": "string"}, " null "),
+    ],
+)
+def test_padded_null_matches_v0_14_1_for_typed_parameters(schema, expected) -> None:
+    """A padded ``null`` must still read as the keyword for every type that
+    cannot hold whitespace as payload.
+
+    Values used to reach the converter already ``.strip()``-ed, so v0.14.1
+    resolved ``<parameter=x>\n null \n</parameter>`` to ``None`` for every
+    schema. Removing that strip without replacing typed-null recognition
+    regressed the non-streaming path; measured against v0.14.1, every row
+    below except the string one matches what the old tree returned.
+    """
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "f",
+                    "parameters": {"type": "object", "properties": {"x": schema}},
+                },
+            }
+        ]
+    }
+    text = (
+        "<tool_call>\n<function=f>\n"
+        "<parameter=x>\n null \n</parameter>\n"
+        "</function>\n</tool_call>"
+    )
+    assert _arguments(text, request)["x"] == expected

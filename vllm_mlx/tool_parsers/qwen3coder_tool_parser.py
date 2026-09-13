@@ -124,7 +124,19 @@ def _convert_param_value(
         if isinstance(decoded, str):
             return decoded
         return param_value
-    elif param_type.startswith(("int", "uint", "long", "short", "unsigned")):
+
+    # Past the string branch the declared type cannot hold surrounding
+    # whitespace as payload, so a padded `null` is the keyword and not a
+    # value. The global check above deliberately does not trim (it also sees
+    # string-typed values, where trimming would widen a pre-existing
+    # stream/non-stream divergence), which left a padded `null` falling
+    # through to the scalar branches: on a `{"type": ["boolean", "null"]}`
+    # parameter it reached the boolean branch and became `False`, silently
+    # turning "no value" into "off".
+    if keyword.lower() == "null":
+        return None
+
+    if param_type.startswith(("int", "uint", "long", "short", "unsigned")):
         try:
             return int(keyword)
         except (ValueError, TypeError):
