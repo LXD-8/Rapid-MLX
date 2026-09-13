@@ -138,6 +138,7 @@ def test_prompt_lookup_policy_keeps_its_positional_field_order() -> None:
     assert legacy.enabled_under_sampling is False
 
 
+@pytest.mark.requires_mlx
 def test_sampled_prompt_lookup_override_cannot_enable_an_unqualified_family(
     monkeypatch,
 ) -> None:
