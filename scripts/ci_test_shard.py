@@ -3,7 +3,9 @@
 
 The hosted Linux matrix runs each shard on a separate clean runner.  We balance
 whole files by physical line count so module-scoped fixtures and import state
-never straddle workers, while keeping planning fast and dependency-free.
+never straddle workers, while keeping planning fast and dependency-free.  Both
+repository pytest configurations restrict discovery to ``test_*.py``; a
+contract test keeps that setting synchronized with this planner.
 """
 
 from __future__ import annotations

@@ -1,8 +1,21 @@
+import configparser
 from pathlib import Path
 
 import pytest
+import tomllib
 
 from scripts.ci_test_shard import TestFile, discover, ignored_paths, partition
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_discovery_pattern_matches_both_pytest_configs() -> None:
+    parser = configparser.ConfigParser()
+    parser.read(REPO_ROOT / "pytest.ini")
+    assert parser["pytest"]["python_files"].split() == ["test_*.py"]
+
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    assert pyproject["tool"]["pytest"]["ini_options"]["python_files"] == ["test_*.py"]
 
 
 def _write(path: Path, lines: int) -> None:
