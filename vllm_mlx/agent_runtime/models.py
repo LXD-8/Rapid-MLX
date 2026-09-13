@@ -240,6 +240,5 @@ class AgentRun(_WireModel):
     pending_call: RedactedPendingCall | None = None
     pending_risk: ToolRisk | None = None
     used_call_ids: tuple[StrictStr, ...] = Field(default_factory=tuple)
-    final_content: StrictStr | None = Field(default=None, max_length=262_144)
     failure_code: StrictStr | None = Field(default=None, max_length=128)
     events: tuple[AgentEvent, ...] = Field(default_factory=tuple)

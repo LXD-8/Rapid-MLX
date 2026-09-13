@@ -92,12 +92,14 @@ def test_successful_tool_round_has_stable_events_and_roundtrips():
         AgentToolResult(call_id="call-1", content="Revenue fell 12%."),
     )
     runtime.request_model(run, [READ])
-    runtime.accept_model_turn(
+    completed = runtime.accept_model_turn(
         run,
         AgentModelTurn(content="Revenue fell 12%."),
     )
 
     assert run.status is AgentRunStatus.COMPLETED
+    assert completed is not None
+    assert completed.final_content == "Revenue fell 12%."
     assert [event.sequence for event in run.events] == list(
         range(1, len(run.events) + 1)
     )
@@ -112,6 +114,7 @@ def test_successful_tool_round_has_stable_events_and_roundtrips():
     event = run.events[-1]
     restored = AgentEvent.model_validate_json(event.model_dump_json())
     assert restored == event
+    assert event.data == {"content_bytes": len(b"Revenue fell 12%.")}
     assert "ledger" not in run.events[3].data
     assert "Choose only the next necessary action" in runtime.ledger_context(run)
 
@@ -128,6 +131,21 @@ def test_goal_bearing_ledger_never_enters_wire_events():
     )
 
     assert secret in runtime.ledger_context(run)
+    assert secret not in "".join(event.model_dump_json() for event in run.events)
+
+
+def test_final_content_is_transient_and_never_enters_wire_events():
+    runtime = _runtime()
+    secret = "tool-derived-secret-do-not-persist"
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Answer")
+    runtime.request_model(run, [])
+
+    output = runtime.accept_model_turn(run, AgentModelTurn(content=secret))
+
+    assert output is not None
+    assert output.final_content == secret
+    assert run.status is AgentRunStatus.COMPLETED
+    assert run.events[-1].data == {"content_bytes": len(secret.encode())}
     assert secret not in "".join(event.model_dump_json() for event in run.events)
 
 

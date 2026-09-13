@@ -72,8 +72,8 @@ forcing macOS-only tools into Python.
 8. Events contain action metadata and safe summaries, never raw tool payload
    values, model reasoning, credentials, screenshots, or clipboard contents.
    Request events retain only call identity and argument names. Credentials
-   must be resolved from opaque references out of band. Raw calls, results, and
-   repeat fingerprints remain runtime-local. Weak run references ensure
+   must be resolved from opaque references out of band. Raw calls, results,
+   final model content, and repeat fingerprints remain transient. Weak run references ensure
    abandoned runs do not pin memory.
 9. Host-generated denial and loop-guard observations are returned transiently
    to the adapter, so every model tool call receives a matching tool result.

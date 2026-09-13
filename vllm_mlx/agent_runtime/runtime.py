@@ -36,6 +36,7 @@ class AgentRuntimeOutput:
 
     call: AgentToolCall | None = None
     observation: AgentToolResult | None = None
+    final_content: str | None = None
 
 
 @dataclass
@@ -231,11 +232,15 @@ class AgentRuntime:
                 self._fail(run, "empty_model_turn")
                 return None
             object.__setattr__(run, "status", AgentRunStatus.COMPLETED)
-            object.__setattr__(run, "final_content", content)
             object.__setattr__(run, "visible_tools", ())
-            _append_event(run, "run.completed", {"content": content}, now=self._clock())
+            _append_event(
+                run,
+                "run.completed",
+                {"content_bytes": len(content.encode())},
+                now=self._clock(),
+            )
             self._call_counts_by_run.pop(id(run), None)
-            return None
+            return AgentRuntimeOutput(final_content=content)
 
         if run.final_synthesis or not run.visible_tools:
             self._fail(run, "tool_call_during_final_synthesis")
@@ -411,7 +416,7 @@ class AgentRuntime:
 
     @staticmethod
     def ledger_context(run: AgentRun) -> str:
-        """Small host-authored state block safe to attach to a tool result."""
+        """Small host-authored state block for a transient model request."""
 
         return (
             f"Goal: {run.goal}\n"
