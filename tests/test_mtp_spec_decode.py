@@ -1656,6 +1656,14 @@ def test_inject_mtp_support_attaches_four_surfaces():
     assert injected is True
     assert validate_mtp_support(model) is True
     assert model.mtp_prompt_lookup_supported is True
+    # ``mtp_prompt_lookup_supported`` alone was never enough: the admission
+    # guard also has to be told this family's recurrent caches carry a
+    # per-boundary restore point, or it rejects every proposal and the
+    # feature is dead code on the whole hybrid family.
+    assert model.mtp_wide_verify_rollback_supported is True
+    policy = model.mtp_prompt_lookup_policy
+    assert policy.enabled_by_default is True
+    assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (8, 64, 16)
 
 
 def test_inject_mtp_support_mirrors_batch_seam_to_outer_wrapper():
@@ -1676,6 +1684,11 @@ def test_inject_mtp_support_mirrors_batch_seam_to_outer_wrapper():
     assert outer.mtp_batch_forward.__self__ is inner
     assert outer.batched_mtp_capability is inner.batched_mtp_capability
     assert outer.mtp_recursive_draft_depth == 2
+    # The generator reads its capabilities off whichever object the scheduler
+    # kept, so a seam that mirrors some of them and not others reintroduces
+    # the bug on exactly the VLM-wrapped path.
+    assert outer.mtp_wide_verify_rollback_supported is True
+    assert outer.mtp_prompt_lookup_policy is inner.mtp_prompt_lookup_policy
 
 
 def test_inject_mtp_support_rejects_non_qwen35_model():
@@ -3664,7 +3677,11 @@ def test_generator_prompt_lookup_falls_through_when_cache_cannot_recover(monkeyp
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
-    monkeypatch.setattr(generator_mod, "_safe_prompt_lookup_draft_count", lambda *_: 0)
+    monkeypatch.setattr(
+        generator_mod,
+        "_safe_prompt_lookup_draft_count",
+        lambda *_a, **_kw: 0,
+    )
 
     timing: dict[str, float] = {}
     list(
@@ -3684,6 +3701,161 @@ def test_generator_prompt_lookup_falls_through_when_cache_cannot_recover(monkeyp
     )
 
     assert timing["prompt_lookup_cache_fallthroughs"] == 1
+
+
+def test_safe_draft_count_admits_snapshot_only_caches_only_when_declared():
+    """A snapshot-rollback cache is recoverable, but only on a model that says so.
+
+    ``GatedDeltaNet``'s ``ArraysCache`` owns neither ``restore_rollback()``
+    nor ``trim()``; its only restore point is the ``rollback_state`` the
+    chunk-split verify patch writes during the forward. Both legacy checks
+    therefore answer "cannot recover" and the guard rejects every proposal
+    -- the bug that silently disabled prompt lookup on the whole Qwen3.5 /
+    Qwen3.8 hybrid family. The capability is model-declared rather than
+    sniffed off the cache because ``rollback_state`` lives on the CLASS: its
+    presence says the slot exists, not that these layers fill it.
+    """
+    from vllm_mlx.spec_decode.mtp.generator import _safe_prompt_lookup_draft_count
+
+    class _ArraysCacheLike:
+        """No ``trim``, no ``restore_rollback`` -- only the snapshot slot."""
+
+        rollback_state = None
+
+        def __init__(self):
+            self.offset = 16
+
+    cache = [_ArraysCacheLike(), _ArraysCacheLike()]
+
+    assert _safe_prompt_lookup_draft_count(cache, 4) == 0
+    assert _safe_prompt_lookup_draft_count(cache, 4, snapshot_rollback=True) == 4
+    # The flag must not conjure recoverability out of a cache that has no
+    # restore point at all -- otherwise a rejected block would be unwindable
+    # on paper and corrupt in practice.
+    assert _safe_prompt_lookup_draft_count([object()], 4, snapshot_rollback=True) == 0
+
+
+def test_generator_admits_prompt_lookup_on_declared_snapshot_rollback(monkeypatch):
+    """A hybrid-SSM target that declares wide rollback stops falling through.
+
+    The cache double is shaped like ``ArraysCache``: it owns no ``trim()``
+    and no ``restore_rollback()``, and its only restore point is the
+    ``rollback_state`` the chunk-split verify patch writes during the
+    forward -- a bare ``(conv, ssm)`` tuple at S == 2, one tuple per
+    interior boundary at S > 2. The script then takes a PARTIAL reject
+    through the wide lookup block, so the copied tail unwinds through the
+    snapshot rather than through a trim that does not exist.
+    """
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
+
+    class _ArraysCacheLike:
+        """Recurrent-layer double: two array slots and a snapshot, nothing else."""
+
+        def __init__(self):
+            self.offset = 0
+            self.state = ["conv@0", "ssm@0"]
+            self.rollback_state = None
+            self.restores: list[tuple] = []
+
+        def __getitem__(self, i):
+            return self.state[i]
+
+        def __setitem__(self, i, value):
+            self.restores.append((i, value))
+            self.state[i] = value
+
+    class _SnapshotWritingModel(_CacheAdvancingQwen35Model):
+        """Writes the restore points the chunk-split verify patch would."""
+
+        def __call__(self, inputs, cache=None, n_confirmed: int = 0, **kwargs):
+            result = super().__call__(
+                inputs, cache=cache, n_confirmed=n_confirmed, **kwargs
+            )
+            span = int(inputs.shape[1])
+            if cache and n_confirmed > 0:
+                head = cache[0]
+                if span == 2:
+                    head.rollback_state = (f"conv@{span}", f"ssm@{span}")
+                elif span > 2:
+                    head.rollback_state = [
+                        (f"conv@{span}.{b}", f"ssm@{span}.{b}") for b in range(span - 1)
+                    ]
+            return result
+
+    def _run(*, declared: bool):
+        model = _SnapshotWritingModel(
+            # Lookup proposes [20, 21]. Target accepts 20, rejects 21 as 19.
+            backbone_outputs=[0, 0, 0, 7, 8, 0, 20, 19, 22],
+            mtp_outputs=[0, 0, 0, 77, 0],
+        )
+        model.mtp_wide_verify_rollback_supported = declared
+        model_cache = _ArraysCacheLike()
+        timing: dict[str, float] = {}
+        emitted = list(
+            mtp_generate_step(
+                mx.array([7, 8, 20, 21], dtype=mx.uint32),
+                model,
+                max_tokens=4,
+                max_k=1,
+                disable_auto_k=True,
+                prompt_cache=[model_cache, _CountingKVCache()],
+                accept_counter=MTPAcceptCounter(),
+                timing_stats=timing,
+            )
+        )
+        return timing, model_cache, emitted
+
+    # The real predicate needs the mlx-level patch installed against a real
+    # GatedDeltaNet, so stand in for "the patch is live": the test pins the
+    # admission logic, not the patcher.
+    monkeypatch.setattr(
+        generator_mod, "gated_delta_snapshot_rollback_installed", lambda: True
+    )
+
+    timing, cache, emitted = _run(declared=True)
+    assert timing.get("prompt_lookup_cache_fallthroughs", 0.0) == 0.0
+    assert timing["prompt_lookup_proposals"] == 1
+    assert timing["prompt_lookup_accepted_tokens"] == 1
+    assert timing["prompt_lookup_rejections"] == 1
+    assert [(token, drafted) for token, _lp, drafted in emitted] == [
+        (7, False),
+        (8, False),
+        (20, True),
+        (19, False),
+    ]
+    # Two unwinds, both through the snapshot: the ordinary S=2 draft reject
+    # takes the bare tuple, and the S=3 lookup block takes the boundary that
+    # keeps exactly the one accepted copied token (``snapshots[keep - 1]``).
+    assert cache.restores == [
+        (0, "conv@2"),
+        (1, "ssm@2"),
+        (0, "conv@3.1"),
+        (1, "ssm@3.1"),
+    ]
+    assert cache.rollback_state is None
+
+    # Same model, same caches: without either half of the conjunction the
+    # guard refuses the proposal and the generator books a fall-through.
+    # (The refused runs book a fall-through on every round whose suffix
+    # matches, and there are more such rounds precisely because no copied
+    # token is ever emitted -- so pin "at least one, and nothing drafted".)
+    rejected, _cache, _emitted = _run(declared=False)
+    assert rejected["prompt_lookup_cache_fallthroughs"] >= 1
+    assert rejected.get("prompt_lookup_proposals", 0.0) == 0.0
+
+    monkeypatch.setattr(
+        generator_mod, "gated_delta_snapshot_rollback_installed", lambda: False
+    )
+    unpatched, _cache, _emitted = _run(declared=True)
+    assert unpatched["prompt_lookup_cache_fallthroughs"] >= 1
+    assert unpatched.get("prompt_lookup_proposals", 0.0) == 0.0
 
 
 def test_generator_fails_closed_when_trim_breaks_its_contract():

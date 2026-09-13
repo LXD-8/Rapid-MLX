@@ -50,7 +50,10 @@ import mlx.core as mx
 # ``_rollback_draft``, and the patch lifts that attribute from a
 # missing-class-attr to a class-default-None.
 from .accept_counter import get_global_counter
-from .cache_patch import patch_arrays_cache_rollback_state
+from .cache_patch import (
+    gated_delta_snapshot_rollback_installed,
+    patch_arrays_cache_rollback_state,
+)
 from .draft_k_controller_v2 import DepthController, get_or_create_controller
 from .prompt_lookup import PromptLookupIndex, PromptLookupPolicy
 
@@ -119,8 +122,23 @@ def _prompt_lookup_is_enabled(model, requested: bool | None = None) -> bool:
     }
 
 
-def _safe_prompt_lookup_draft_count(model_cache, desired: int) -> int:
-    """Return the largest proposal whose full rejection is recoverable."""
+def _safe_prompt_lookup_draft_count(
+    model_cache, desired: int, *, snapshot_rollback: bool = False
+) -> int:
+    """Return the largest proposal whose full rejection is recoverable.
+
+    ``snapshot_rollback`` says the target's recurrent layers write a
+    per-boundary restore point during the verify forward itself (see
+    ``cache_patch.gated_delta_snapshot_rollback_installed``). Those caches
+    own neither ``restore_rollback()`` nor ``trim()``, so without the flag
+    the two checks below both answer "no" and the guard rejects every
+    proposal -- which is what silently disabled prompt lookup on every
+    hybrid SSM target, ``mtp_prompt_lookup_supported`` notwithstanding.
+    The flag is model-qualified rather than sniffed off the cache object
+    because the ``rollback_state`` slot is installed on the ``ArraysCache``
+    CLASS: its presence says the slot exists, not that this model's layers
+    fill it.
+    """
     from vllm_mlx.cache_rollback import can_advance
 
     def _can_recover(cache, count: int) -> bool:
@@ -132,6 +150,8 @@ def _safe_prompt_lookup_draft_count(model_cache, desired: int) -> int:
         if children is not None:
             return all(_can_recover(child, count) for child in children)
         if callable(getattr(cache, "restore_rollback", None)):
+            return True
+        if snapshot_rollback and hasattr(cache, "rollback_state"):
             return True
         return can_advance(cache, count)
 
@@ -408,6 +428,16 @@ def mtp_generate_step(
     except (TypeError, ValueError):  # pragma: no cover — non-introspectable
         _mtp_supports_hidden = False
     _mtp_supports_fused_greedy = callable(getattr(model, "mtp_greedy", None))
+    # Wide copy-drafts need a restore point at EVERY interior boundary of the
+    # verify block, not just the one the K=1 chain uses. Hybrid SSM targets
+    # get exactly that from the chunk-split patch, but only the injector that
+    # installed the patch can vouch that this model's recurrent layers are the
+    # ones it wraps -- so the capability is declared on the model and
+    # confirmed against the live patch here.
+    _snapshot_rollback_verify = (
+        bool(getattr(model, "mtp_wide_verify_rollback_supported", False))
+        and gated_delta_snapshot_rollback_installed()
+    )
 
     y = prompt.astype(mx.uint32)
     _is_greedy = temp == 0
@@ -1071,7 +1101,11 @@ def mtp_generate_step(
         confidence_ladder = (8, 12, 16, 24, 32)
         confidence_cap = confidence_ladder[min(extension, len(confidence_ladder) - 1)]
         proposed_tokens = match.tokens[:confidence_cap]
-        safe_count = _safe_prompt_lookup_draft_count(model_cache, len(proposed_tokens))
+        safe_count = _safe_prompt_lookup_draft_count(
+            model_cache,
+            len(proposed_tokens),
+            snapshot_rollback=_snapshot_rollback_verify,
+        )
         if safe_count == 0:
             _timing_add("prompt_lookup_cache_fallthroughs", 1.0)
             return None
