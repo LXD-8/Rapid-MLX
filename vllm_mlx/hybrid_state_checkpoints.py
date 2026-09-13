@@ -155,19 +155,36 @@ class StateCheckpoints:
         return StateCheckpoints(items)
 
 
+def _recurrent_cache_types() -> tuple[type, ...]:
+    """The cache classes whose ``cache`` list this module knows how to
+    checkpoint and restore: mlx-lm's ``ArraysCache`` (and subclasses such as
+    the Mamba/GatedDeltaNet state caches). Positive identification only —
+    a look-alike wrapper with a ``cache`` attribute is NOT accepted, so the
+    fetch path keeps refusing it instead of restoring a shallow copy of
+    state it does not understand."""
+    global _RECURRENT_TYPES
+    if _RECURRENT_TYPES is None:
+        try:
+            from mlx_lm.models.cache import ArraysCache
+
+            _RECURRENT_TYPES = (ArraysCache,)
+        except Exception:
+            _RECURRENT_TYPES = ()
+    return _RECURRENT_TYPES
+
+
+_RECURRENT_TYPES: tuple[type, ...] | None = None
+
+
 def is_recurrent_layer(layer: Any) -> bool:
-    """True for ``ArraysCache``-shaped layers (a ``cache`` list of arrays)."""
+    """True only for a genuine mlx-lm ``ArraysCache`` whose ``cache`` is the
+    expected list of state arrays."""
     if layer is None:
         return False
-    if not isinstance(getattr(layer, "cache", None), list):
+    types = _recurrent_cache_types()
+    if not types or not isinstance(layer, types):
         return False
-    is_trimmable = getattr(layer, "is_trimmable", None)
-    if callable(is_trimmable):
-        try:
-            return not bool(is_trimmable())
-        except Exception:
-            return False
-    return not hasattr(layer, "trim")
+    return isinstance(getattr(layer, "cache", None), list)
 
 
 def layer_checkpoints(layer: Any) -> StateCheckpoints | None:

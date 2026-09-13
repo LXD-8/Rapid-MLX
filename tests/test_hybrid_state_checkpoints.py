@@ -16,7 +16,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.hybrid_state_checkpoints import (
+# The module positively identifies mlx-lm's ``ArraysCache``; every test here
+# builds on that class, so the whole file rides the no-MLX auto-skip.
+pytestmark = pytest.mark.requires_mlx
+ArraysCache = pytest.importorskip("mlx_lm.models.cache").ArraysCache
+
+from vllm_mlx.hybrid_state_checkpoints import (  # noqa: E402
     CHECKPOINT_ATTR,
     StateCheckpoints,
     achievable_position,
@@ -39,13 +44,20 @@ class _Array:
         self.dtype = SimpleNamespace(size=2)
 
 
-class _RecurrentLayer:
-    """Mirror ``ArraysCache``: a ``cache`` list of arrays, not trimmable."""
+class _RecurrentLayer(ArraysCache):
+    """A real ``ArraysCache`` (the only class the module accepts) holding
+    lightweight fake arrays so the bookkeeping tests need no GPU work."""
 
     def __init__(self, tag: int):
+        super().__init__(2)
         self.cache = [_Array(tag), _Array(tag, (1, 2, 2))]
-        self.left_padding = None
-        self.lengths = None
+
+
+class _LookAlikeLayer:
+    """Duck-types ``ArraysCache`` but is not one; must be refused."""
+
+    def __init__(self):
+        self.cache = [_Array(0)]
 
     def is_trimmable(self) -> bool:
         return False
@@ -114,6 +126,7 @@ class TestRecordAndRestore:
     def test_is_recurrent_layer_classification(self):
         assert is_recurrent_layer(_RecurrentLayer(0))
         assert not is_recurrent_layer(_KVLayer())
+        assert not is_recurrent_layer(_LookAlikeLayer())
         assert not is_recurrent_layer(None)
 
     def test_record_keeps_every_recurrent_layer_in_lockstep(self):
