@@ -153,6 +153,28 @@ def test_eligibility_is_pinned_to_qualified_qwen36_geometry():
     assert _supports_qwen36_native_text_cache(model) is False
 
 
+def test_eligibility_fails_closed_on_malformed_layer_container():
+    class _MalformedModel:
+        args = SimpleNamespace(
+            model_type="qwen3_5_moe_text",
+            hidden_size=2048,
+            num_hidden_layers=40,
+            num_experts=256,
+            num_experts_per_tok=8,
+            full_attention_interval=4,
+            linear_num_value_heads=32,
+            linear_num_key_heads=16,
+            linear_key_head_dim=128,
+            linear_value_head_dim=128,
+        )
+
+        @property
+        def layers(self):
+            raise TypeError("malformed layers")
+
+    assert _supports_qwen36_native_text_cache(_MalformedModel()) is False
+
+
 def test_start_gate_rejects_spec_decode_and_no_hybrid_override():
     args = SimpleNamespace(
         model_type="qwen3_5_moe_text",
@@ -327,6 +349,75 @@ async def test_native_text_engine_failure_keeps_mllm_authoritative(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mllm_start_activates_native_text_lane_only_after_qualification(
+    monkeypatch,
+):
+    from vllm_mlx import mllm_scheduler as mllm_scheduler_module
+    from vllm_mlx.engine import batched as batched_module
+    from vllm_mlx.models import mllm as mllm_module
+    from vllm_mlx.utils import chat_template_registry
+
+    args = SimpleNamespace(
+        model_type="qwen3_5_moe_text",
+        hidden_size=2048,
+        num_hidden_layers=40,
+        num_experts=256,
+        num_experts_per_tok=8,
+        full_attention_interval=4,
+        linear_num_value_heads=32,
+        linear_num_key_heads=16,
+        linear_key_head_dim=128,
+        linear_value_head_dim=128,
+    )
+    language_model = SimpleNamespace(
+        args=args,
+        layers=[SimpleNamespace(is_linear=(index + 1) % 4 != 0) for index in range(40)],
+    )
+
+    class _FakeMultimodalLM:
+        def __init__(self, *_args, **_kwargs):
+            self.model = SimpleNamespace(language_model=language_model)
+            self.processor = SimpleNamespace(tokenizer=SimpleNamespace())
+            self.config = {"model_type": "qwen3_5_moe"}
+
+        def load(self):
+            return None
+
+    class _FakeMLLMScheduler:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def start(self):
+            return None
+
+    monkeypatch.setattr(mllm_module, "MLXMultimodalLM", _FakeMultimodalLM)
+    monkeypatch.setattr(mllm_scheduler_module, "MLLMScheduler", _FakeMLLMScheduler)
+    monkeypatch.setattr(
+        batched_module, "_probe_mllm_cache_type", lambda _model: "ArraysCache"
+    )
+    monkeypatch.setattr(
+        chat_template_registry, "resolve_chat_template", lambda *_args: None
+    )
+
+    engine = BatchedEngine("fake/qwen36", force_mllm=True)
+    activated = []
+
+    async def _activate(model):
+        activated.append(model)
+
+    monkeypatch.setattr(engine, "_start_qwen36_native_text_engine", _activate)
+    try:
+        await engine._start_mllm()
+    finally:
+        assert engine._model_load_executor is not None
+        engine._model_load_executor.shutdown(wait=True)
+        engine._model_load_executor = None
+
+    assert activated == [language_model]
+    assert isinstance(engine._mllm_scheduler, _FakeMLLMScheduler)
+
+
+@pytest.mark.asyncio
 async def test_dual_lane_abort_checks_both_schedulers():
     class _MLLM:
         def __init__(self):
@@ -401,6 +492,7 @@ def test_dual_lane_lifecycle_request_ids_are_unioned():
     engine._engine = SimpleNamespace(engine=SimpleNamespace(scheduler=text))
 
     assert engine._lifecycle_schedulers() == (mllm, text)
+    assert engine._lifecycle_scheduler() is mllm
     assert engine._lifecycle_request_ids() == {"media-1", "text-1", "shared-id"}
 
 
@@ -468,6 +560,13 @@ def test_dual_lane_does_not_enable_mllm_cache_persistence():
 
     assert engine.save_cache_to_disk("unused") is False
     assert engine.load_cache_from_disk("unused") == 0
+
+    from vllm_mlx.cache.protocol import EngineNotReadyError
+
+    with pytest.raises(EngineNotReadyError, match="cannot export cache"):
+        engine.save_cache_with_outcome("unused")
+    with pytest.raises(EngineNotReadyError, match="cannot import cache"):
+        engine.load_cache_with_result("unused")
 
 
 def test_dual_lane_cache_stats_preserve_mllm_shape_and_expose_text_lane():
