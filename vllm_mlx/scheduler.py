@@ -5044,6 +5044,9 @@ class Scheduler:
         """
         if not prompt_responses or not self._hybrid_checkpoints_enabled():
             return
+        batch_generator = self.batch_generator
+        if batch_generator is None:
+            return
         stride = _state_checkpoint_stride()
         for resp in prompt_responses:
             if getattr(resp, "end_of_prompt", False):
@@ -5065,7 +5068,7 @@ class Scheduler:
                 if position - newest < stride:
                     continue
             try:
-                extracted = self.batch_generator.extract_cache([resp.uid])
+                extracted = batch_generator.extract_cache([resp.uid])
             except Exception as exc:
                 logger.debug("[hybrid_checkpoint] extract_cache failed: %s", exc)
                 continue

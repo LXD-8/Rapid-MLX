@@ -65,7 +65,7 @@ def _array_bytes(arr: Any) -> int:
     shape = getattr(arr, "shape", None)
     dtype = getattr(arr, "dtype", None)
     if shape is not None and dtype is not None and hasattr(dtype, "size"):
-        return math.prod(shape) * dtype.size
+        return int(math.prod(shape)) * int(dtype.size)
     return int(getattr(arr, "nbytes", 0) or 0)
 
 
@@ -268,7 +268,9 @@ def achievable_position(cache: Sequence[Any], target: int) -> int:
 def restore_recurrent_layer(layer: Any, position: int) -> Any | None:
     """A copy of ``layer`` rewound to its checkpoint at ``position``."""
     holder = layer_checkpoints(layer)
-    arrays = holder.arrays_at(position) if holder else None
+    if holder is None:
+        return None
+    arrays = holder.arrays_at(position)
     if arrays is None:
         return None
     restored = copy.copy(layer)
