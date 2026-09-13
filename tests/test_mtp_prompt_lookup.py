@@ -79,3 +79,34 @@ def test_prompt_lookup_excludes_prompt_edge_without_continuation() -> None:
 def test_prompt_lookup_rejects_invalid_configuration(kwargs, message) -> None:
     with pytest.raises(ValueError, match=message):
         PromptLookupIndex([1, 2, 3], **kwargs)
+
+
+def test_prompt_lookup_policy_admits_greedy_for_every_family() -> None:
+    """Greedy copying is the qualified route everywhere it is enabled at all.
+
+    ``enabled_under_sampling`` is a second, narrower gate, so it must not be
+    able to take away what a family already had: a policy that has qualified
+    greedy-only still admits temperature 0.
+    """
+    policy = PromptLookupPolicy(enabled_by_default=True)
+
+    assert policy.enabled_under_sampling is False
+    assert policy.admits_temperature(0.0) is True
+    assert policy.admits_temperature(0) is True
+
+
+def test_prompt_lookup_policy_withholds_sampling_until_a_family_qualifies() -> None:
+    """A family that has not measured the sampled route stays greedy-only.
+
+    This is the conservative half of the contract and the reason the flag is
+    per-family: correctness holds at any temperature, but how much of the
+    copy speedup survives once acceptance is probabilistic is an empirical
+    question per model family, so the route stays off until measured.
+    """
+    greedy_only = PromptLookupPolicy(enabled_by_default=True)
+    qualified = PromptLookupPolicy(enabled_by_default=True, enabled_under_sampling=True)
+
+    assert greedy_only.admits_temperature(0.7) is False
+    assert greedy_only.admits_temperature(1e-6) is False
+    assert qualified.admits_temperature(0.7) is True
+    assert qualified.admits_temperature(0.0) is True

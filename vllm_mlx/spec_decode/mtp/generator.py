@@ -64,6 +64,14 @@ from .prompt_lookup import (
 _LEGACY_PROMPT_LOOKUP_POLICY = PromptLookupPolicy()
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a boolean process override, treating only explicit words as off."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "off", "no"}
+
+
 def _prompt_lookup_policy(model) -> PromptLookupPolicy:
     policy = getattr(model, "mtp_prompt_lookup_policy", None)
     return (
@@ -87,6 +95,19 @@ def _effective_prompt_lookup_policy(model) -> PromptLookupPolicy:
     )
     return PromptLookupPolicy(
         enabled_by_default=_prompt_lookup_is_enabled(model),
+        # Carried, not re-derived: this is the family's own qualification of
+        # the sampled route (see ``PromptLookupPolicy.admits_temperature``),
+        # and dropping it here would silently hold every temperature > 0
+        # request on the greedy-only path no matter what the family declared
+        # -- including the whole served path, since ``scheduler.py`` reads
+        # its policy from this function. The env override exists for the same
+        # reason the enable flag has one: an operator bisecting a regression
+        # needs to put one request class back on the old route without
+        # turning copying off for the greedy requests too.
+        enabled_under_sampling=_env_flag(
+            "RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED",
+            policy.enabled_under_sampling,
+        ),
         min_ngram=min_ngram,
         max_ngram=max(
             min_ngram,
@@ -128,15 +149,10 @@ def _prompt_lookup_is_enabled(model, requested: bool | None = None) -> bool:
         return False
     if requested is not None:
         return requested
-    override = os.environ.get("RAPID_MLX_MTP_PROMPT_LOOKUP")
-    if override is None:
-        return _prompt_lookup_policy(model).enabled_by_default
-    return override.strip().lower() not in {
-        "0",
-        "false",
-        "off",
-        "no",
-    }
+    return _env_flag(
+        "RAPID_MLX_MTP_PROMPT_LOOKUP",
+        _prompt_lookup_policy(model).enabled_by_default,
+    )
 
 
 def _safe_prompt_lookup_draft_count(
@@ -465,9 +481,12 @@ def mtp_generate_step(
         if prompt_lookup_enabled is None
         else prompt_lookup_enabled
     )
-    _prompt_lookup_enabled = _is_greedy and _prompt_lookup_is_enabled(
-        model, requested=requested_prompt_lookup
-    )
+    # Sampled requests copy too, on families that have qualified it -- the
+    # reason to hold a family back is its cache-rollback contract, not the
+    # sampler (``PromptLookupPolicy.admits_temperature``).
+    _prompt_lookup_enabled = prompt_lookup_policy.admits_temperature(
+        temp
+    ) and _prompt_lookup_is_enabled(model, requested=requested_prompt_lookup)
     # Avoid copying a potentially long prompt back to the CPU for every other
     # MTP backend. Prompt lookup is opt-in per model because its cache-history
     # synchronization contract must be audited for that architecture first.

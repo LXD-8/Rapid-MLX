@@ -23,6 +23,8 @@ class PromptLookupPolicy:
     """Model-qualified prompt lookup policy captured at request start."""
 
     enabled_by_default: bool = False
+    # Per-family opt-in for temperature > 0; see ``admits_temperature``.
+    enabled_under_sampling: bool = False
     min_ngram: int = 8
     max_ngram: int = 10
     max_tokens: int = 24
@@ -34,6 +36,28 @@ class PromptLookupPolicy:
             raise ValueError("max_ngram must be >= min_ngram")
         if self.max_tokens < 1:
             raise ValueError("max_tokens must be positive")
+
+    def admits_temperature(self, temp: float) -> bool:
+        """Whether a request at this temperature may draft by copying.
+
+        Greedy is not a correctness requirement for copying. A copied token
+        is a point-mass proposal, so speculative sampling accepts it with
+        probability ``p(token)`` under the target's own tempered distribution
+        and otherwise emits a draw from that distribution with the proposed
+        token removed and renormalised. Composed, the two branches emit
+        exactly the target's distribution: ``p(d)`` for the proposal, and
+        ``(1 - p(d)) * p(x) / (1 - p(d)) = p(x)`` for anything else. The
+        generator's verify path already implements both halves for every
+        non-greedy request.
+
+        What *is* family-specific is which rows the target's caches can roll
+        back when a proposal is refused, and how much of the copy speedup
+        survives once acceptance stops being a hard argmax match. So a family
+        declares the sampled route only once it has been measured there,
+        which is what ``enabled_under_sampling`` records -- and why this is a
+        per-family field rather than one global flip.
+        """
+        return temp == 0 or self.enabled_under_sampling
 
 
 class PromptLookupIndex:
