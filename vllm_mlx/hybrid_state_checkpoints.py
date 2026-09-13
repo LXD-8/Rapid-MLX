@@ -193,14 +193,28 @@ def layer_checkpoints(layer: Any) -> StateCheckpoints | None:
 
 
 def attach_checkpoints(
-    cache: Sequence[Any], holders: Sequence[StateCheckpoints | None]
+    cache: Sequence[Any],
+    holders: Sequence[StateCheckpoints | None],
+    *,
+    max_position: int | None = None,
 ) -> None:
-    """Attach per-layer holders (aligned with ``cache``) onto recurrent layers."""
+    """Attach per-layer holders (aligned with ``cache``) onto recurrent layers.
+
+    ``max_position`` is the token length the cache is stored at. Checkpoints
+    past it were recorded from tokens the entry does not contain (e.g. the
+    tail beyond a message boundary), so they are dropped rather than let a
+    later request resume from state computed on a different prompt.
+    """
     if len(holders) != len(cache):
         return
     for layer, holder in zip(cache, holders):
-        if holder is not None and is_recurrent_layer(layer):
-            setattr(layer, CHECKPOINT_ATTR, holder)
+        if holder is None or not is_recurrent_layer(layer):
+            continue
+        if max_position is not None:
+            holder = holder.truncated(max_position)
+            if not holder.positions:
+                continue
+        setattr(layer, CHECKPOINT_ATTR, holder)
 
 
 def collect_checkpoints(cache: Sequence[Any]) -> list[StateCheckpoints | None]:
@@ -214,6 +228,22 @@ def collect_checkpoints(cache: Sequence[Any]) -> list[StateCheckpoints | None]:
 def checkpoint_bytes(cache: Sequence[Any]) -> int:
     """Bytes held by checkpoints across ``cache`` (for memory accounting)."""
     return sum(h.nbytes for h in collect_checkpoints(cache) if h is not None)
+
+
+def _materialise(states: dict[int, tuple[Any, ...]]) -> bool:
+    """Force the checkpointed arrays now. A failure (allocation, Metal
+    error) must not leave a lazily-built graph registered as a checkpoint
+    that only blows up on a later cache hit, so the caller records nothing."""
+    try:
+        import mlx.core as mx
+    except ImportError:  # pragma: no cover - MLX absent in some test envs
+        return True
+    try:
+        mx.eval(*[a for arrays in states.values() for a in arrays])
+    except Exception as exc:
+        logger.debug("[hybrid_checkpoint] materialisation failed: %s", exc)
+        return False
+    return True
 
 
 def record_checkpoints(
@@ -250,12 +280,8 @@ def record_checkpoints(
     newest = probe.positions[-1] if probe is not None and probe.positions else None
     if newest is not None and (position <= newest or position - newest < stride):
         return False
-    try:
-        import mlx.core as mx
-
-        mx.eval(*[a for arrays in states.values() for a in arrays])
-    except Exception:  # pragma: no cover - MLX absent in some test envs
-        pass
+    if not _materialise(states):
+        return False
     for i in recurrent:
         base = holders[i] or StateCheckpoints()
         holders[i] = base.with_checkpoint(

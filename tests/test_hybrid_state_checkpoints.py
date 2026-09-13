@@ -148,6 +148,34 @@ class TestRecordAndRestore:
         assert not record_checkpoints(cache, holders, 2048, max_count=4, stride=1)
         assert holders == [None, None, None]
 
+    def test_record_drops_checkpoint_when_materialisation_fails(self, monkeypatch):
+        import mlx.core as mx
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("Metal allocation failed")
+
+        monkeypatch.setattr(mx, "eval", _boom)
+        cache = _cache(0)
+        holders = collect_checkpoints(cache)
+        assert not record_checkpoints(cache, holders, 2048, max_count=4, stride=1)
+        assert holders == [None, None, None]
+
+    def test_attach_truncates_to_the_stored_length(self):
+        cache = _cache(0)
+        holders = collect_checkpoints(cache)
+        for pos in (2048, 4096, 6144):
+            assert record_checkpoints(cache, holders, pos, max_count=4, stride=1)
+
+        boundary_entry = _cache(1)
+        attach_checkpoints(boundary_entry, holders, max_position=5000)
+        assert layer_checkpoints(boundary_entry[1]).positions == (2048, 4096)
+        # The live holders are untouched: later chunks keep extending them.
+        assert holders[1].positions == (2048, 4096, 6144)
+
+        short_entry = _cache(2)
+        attach_checkpoints(short_entry, holders, max_position=1000)
+        assert layer_checkpoints(short_entry[1]) is None
+
     def test_record_needs_aligned_holders_and_positive_position(self):
         cache = _cache(0)
         assert not record_checkpoints(cache, [None], 2048, max_count=4, stride=1)
@@ -359,6 +387,26 @@ class TestSchedulerRecording:
         scheduler._attach_hybrid_checkpoints(7, stored)
         assert layer_checkpoints(stored[1]) is holders[1]
         assert layer_checkpoints(stored[0]) is None
+
+    def test_boundary_snapshot_drops_checkpoints_past_the_boundary(self):
+        """Turn 1 stores a boundary entry at 3000 tokens while its own
+        prefill continued to 8000. Turn 2 shares the boundary prefix but has
+        a different tail: seeding it from that entry must not carry turn 1's
+        4096/6144 checkpoints, which describe tokens turn 2 never sent."""
+        scheduler = self._scheduler()
+        live = _cache(0)
+        holders = collect_checkpoints(live)
+        for pos in (2048, 4096, 6144):
+            assert record_checkpoints(live, holders, pos, max_count=4, stride=1)
+        scheduler._hybrid_checkpoints[7] = holders
+
+        boundary_entry = _cache(1)
+        scheduler._attach_hybrid_checkpoints(7, boundary_entry, length=3000)
+        assert layer_checkpoints(boundary_entry[1]).positions == (2048,)
+
+        scheduler._seed_hybrid_checkpoints(8, boundary_entry)
+        assert scheduler._hybrid_checkpoints[8][1].positions == (2048,)
+        assert achievable_position(boundary_entry, 7000) == 2048
 
     def test_disabled_without_hybrid_entries_or_when_max_is_zero(self, monkeypatch):
         scheduler = self._scheduler(hybrid_entries=0)

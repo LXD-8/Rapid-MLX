@@ -5026,11 +5026,19 @@ class Scheduler:
             self._hybrid_checkpoints[uid] = holders
 
     def _attach_hybrid_checkpoints(
-        self, uid: int | None, cache: list[Any] | None
+        self,
+        uid: int | None,
+        cache: list[Any] | None,
+        *,
+        length: int | None = None,
     ) -> None:
+        """Attach the uid's checkpoints to ``cache`` before it is stored.
+        ``length`` is the token length the entry is stored at; checkpoints
+        past it (recorded from the tail the entry does not keep) are dropped.
+        """
         holders = self._hybrid_checkpoints.get(uid) if uid is not None else None
         if holders and cache:
-            _attach_state_checkpoints(cache, holders)
+            _attach_state_checkpoints(cache, holders, max_position=length)
 
     def _record_hybrid_checkpoints(self, prompt_responses) -> None:
         """Record recurrent state at each prefill chunk boundary (#hybrid ckpt).
@@ -5261,7 +5269,7 @@ class Scheduler:
             reconstructed = self._reconstruct_cache_from_states(states)
             if not reconstructed:
                 continue
-            self._attach_hybrid_checkpoints(uid, reconstructed)
+            self._attach_hybrid_checkpoints(uid, reconstructed, length=prefix_boundary)
 
             prefix_tokens = list(request.prompt_token_ids[:prefix_boundary])
             _t0 = _time.monotonic()
