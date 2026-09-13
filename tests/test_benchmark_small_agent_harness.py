@@ -111,6 +111,20 @@ def clamp(value, low, high):
     assert observed == [0, 4, 10]
 
 
+def test_safe_ast_interpreter_handles_conditional_expression() -> None:
+    function = ast.parse(
+        "def clamp(value, low, high):\n"
+        "    return low if value < low else high if value > high else value\n"
+    ).body[0]
+    observed = [
+        BENCHMARK.evaluate_function(
+            function, {"value": value, "low": -5, "high": 5}
+        )
+        for value in (-10, -3, 7)
+    ]
+    assert observed == [-5, -3, 5]
+
+
 def test_safe_ast_interpreter_rejects_code_execution() -> None:
     function = ast.parse(
         """\
@@ -311,6 +325,22 @@ def test_search_requires_opening_the_specific_authoritative_url(
     assert scored["passed"] is False
 
 
+def test_policy_requires_complete_deadline_time_and_timezone(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "search_policy")
+    history = [
+        {"name": "search_web", "ok": True, "arguments": {"query": "grant"}},
+        {
+            "name": "open_url",
+            "ok": True,
+            "arguments": {"url": "https://grants.test/2026"},
+        },
+    ]
+    incomplete = "October 14, 2026, $25,000 — https://grants.test/2026"
+    complete = "October 14, 2026 at 5 PM PT, $25,000 — https://grants.test/2026"
+    assert BENCHMARK.score_task(task, tmp_path, incomplete, history, {})["passed"] is False
+    assert BENCHMARK.score_task(task, tmp_path, complete, history, {})["passed"] is True
+
+
 def test_battery_comparison_rejects_reversed_direction(tmp_path: Path) -> None:
     task = next(task for task in BENCHMARK.TASKS if task.id == "search_battery")
     history = [
@@ -476,6 +506,15 @@ def test_release_support_allows_a_corrected_rumor(tmp_path: Path) -> None:
 def test_config_verifier_requires_integer_port(tmp_path: Path) -> None:
     (tmp_path / "result.json").write_text('{"host":"127.0.0.1","port":8765.0}')
     task = next(task for task in BENCHMARK.TASKS if task.id == "code_config")
+    passed, _ = BENCHMARK.run_task_tests(task, tmp_path)
+    assert passed is False
+
+
+def test_clamp_verifier_rejects_hardcoded_bounds(tmp_path: Path) -> None:
+    target = tmp_path / "utils" / "math.py"
+    target.parent.mkdir()
+    target.write_text("def clamp(value, low, high):\n    return max(0, min(10, value))\n")
+    task = next(task for task in BENCHMARK.TASKS if task.id == "code_clamp")
     passed, _ = BENCHMARK.run_task_tests(task, tmp_path)
     assert passed is False
 

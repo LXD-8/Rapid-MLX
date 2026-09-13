@@ -240,7 +240,13 @@ TASKS = [
             "https://grants.test/2025": "Archived 2025 Acorn Grant. Deadline October 1, 2025. Maximum $20,000.",
             "https://grants.test/2026": "Official 2026 Acorn Grant rules. Applications close October 14, 2026 at 5 PM PT. Maximum award: $25,000.",
         },
-        required=["October 14", "2026", "$25,000", "https://grants.test/2026"],
+        required=[
+            "October 14",
+            "2026",
+            "5 PM PT",
+            "$25,000",
+            "https://grants.test/2026",
+        ],
         required_tools=["search_web", "open_url"],
     ),
     Task(
@@ -390,6 +396,9 @@ def evaluate_node(node: ast.AST, variables: dict[str, float | int]) -> Any:
         )
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return operator.neg(evaluate_node(node.operand, variables))
+    if isinstance(node, ast.IfExp):
+        branch = node.body if evaluate_node(node.test, variables) else node.orelse
+        return evaluate_node(branch, variables)
     if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
         for value in node.values:
             if not evaluate_node(value, variables):
@@ -513,10 +522,20 @@ def run_task_tests(task: Task, root: Path) -> tuple[bool, str]:
             function = unique_function(tree, "clamp")
             if not has_exact_signature(function, ["value", "low", "high"]):
                 return False, "Tests failed: clamp must accept value, low, high."
+            cases = [
+                (-3, 0, 10, 0),
+                (4, 0, 10, 4),
+                (15, 0, 10, 10),
+                (-10, -5, 5, -5),
+                (-3, -5, 5, -3),
+                (7, -5, 5, 5),
+            ]
             ok = all(
-                evaluate_function(function, {"value": value, "low": 0, "high": 10})
+                evaluate_function(
+                    function, {"value": value, "low": low, "high": high}
+                )
                 == expected
-                for value, expected in [(-3, 0), (4, 4), (15, 10)]
+                for value, low, high, expected in cases
             )
         elif task.test_kind == "config":
             value = json.loads(safe_path(root, "result.json").read_text())
