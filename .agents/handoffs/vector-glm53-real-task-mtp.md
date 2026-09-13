@@ -68,6 +68,8 @@ competitor-causal record merged in PR #3389.
   tok/s. Its first run improved median client/server-decode throughput by
   7.7%/8.7% over positioned MTP plus #2234 and exceeded same-width oMLX's
   31.813 tok/s by 6.3% while retaining own-AR equivalence.
+- The cache-owned AR/MTP peak Metal readings were 184.147/188.499 GB, within
+  the existing product qualification envelope.
 - MTP long-context peak Metal memory was 188.679 GB versus 184.141 GB for AR.
 
 ## Unresolved

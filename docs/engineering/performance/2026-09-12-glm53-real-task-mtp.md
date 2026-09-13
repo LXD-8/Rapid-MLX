@@ -270,6 +270,9 @@ control's complete reasoning and final response byte-for-byte while improving
 the six tasks by 1.253x, 1.306x, 1.188x, 1.297x, 1.179x, and 1.082x. The
 median paired gain was 1.221x.
 
+Peak Metal memory was 184.147 GB for the AR control and 188.499 GB for MTP,
+within the previously qualified working-set envelope.
+
 Relative to the previously qualified positioned-MTP plus gate/up result, the
 first cache-owned run moved median client throughput from 31.390 to 33.821
 tok/s (1.077x) and median server decode from 35.461 to 38.564 tok/s (1.087x).
