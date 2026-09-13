@@ -341,6 +341,13 @@ def test_padded_json_quoted_string_keeps_stream_parity(wire: str) -> None:
         ({"type": "null"}, None),
         ({"type": "boolean"}, None),
         ({"type": "integer"}, None),
+        # Shapes for which ``_schema_type`` returns None, so they never reach
+        # the type dispatch at all. A per-branch guard missed every one of
+        # these; the rule has to live at the ``_is_string_param`` boundary.
+        ({"type": ["null"]}, None),
+        ({"anyOf": [{"type": "null"}]}, None),
+        ({"oneOf": [{"type": "null"}]}, None),
+        ({"description": "no type key"}, None),
         # A string parameter keeps the padding: there it is payload.
         ({"type": "string"}, " null "),
     ],
@@ -372,3 +379,26 @@ def test_padded_null_matches_v0_14_1_for_typed_parameters(schema, expected) -> N
         "</function>\n</tool_call>"
     )
     assert _arguments(text, request)["x"] == expected
+
+
+def test_padded_null_on_an_undeclared_parameter() -> None:
+    """An undeclared parameter has no schema, so it cannot be string-typed and
+    the padded keyword still resolves. v0.14.1 returned ``None`` here because
+    the value arrived pre-stripped."""
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "f",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+    }
+    text = (
+        "<tool_call>\n<function=f>\n"
+        "<parameter=x>\n null \n</parameter>\n"
+        "</function>\n</tool_call>"
+    )
+    assert _arguments(text, request)["x"] is None

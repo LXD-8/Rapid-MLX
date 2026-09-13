@@ -95,17 +95,25 @@ def _convert_param_value(
     (#3401), a model that pads a scalar -- ``<parameter=flag> true </parameter>``
     -- must still resolve to the scalar rather than to ``False``.
 
-    The ``null`` check deliberately does NOT trim, matching vLLM and SGLang.
-    It runs before the type dispatch, so it applies to string-typed values
-    too, and this function is not idempotent: the streaming close path can
-    convert an already-decoded value a second time (a pre-existing defect in
-    ``_close_string_increment``), where a trimmed match would turn the string
-    ``" null "`` into ``None`` in the streamed arguments but not the
-    non-streamed ones. Leaving it untrimmed keeps that defect exactly as it
-    was rather than widening it.
+    A padded ``null`` is the keyword for every parameter EXCEPT a string-typed
+    one, and that boundary is ``_is_string_param`` rather than a per-branch
+    test, because it has to hold for the shapes that never reach the type
+    dispatch at all: an undeclared parameter, a schema with no ``type`` key,
+    and ``{"type": ["null"]}`` / null-only ``anyOf`` / ``oneOf`` (for which
+    ``_schema_type`` returns ``None``). v0.14.1 resolved all of them to
+    ``None`` because the value arrived pre-stripped.
+
+    The string case is the deliberate exception, twice over. Its padding is
+    payload under this wire's contract, and it is also the only set of values
+    that reaches ``_close_string_increment``, where this function can be
+    applied a second time to an already-decoded value (a pre-existing defect
+    left untouched here). Trimming there would turn the string ``" null "``
+    into ``None`` in the streamed arguments but not the non-streamed ones.
     """
     keyword = param_value.strip()
     if param_value.lower() == "null":
+        return None
+    if keyword.lower() == "null" and not _is_string_param(param_name, param_config):
         return None
 
     if param_name not in param_config:
@@ -124,17 +132,6 @@ def _convert_param_value(
         if isinstance(decoded, str):
             return decoded
         return param_value
-
-    # Past the string branch the declared type cannot hold surrounding
-    # whitespace as payload, so a padded `null` is the keyword and not a
-    # value. The global check above deliberately does not trim (it also sees
-    # string-typed values, where trimming would widen a pre-existing
-    # stream/non-stream divergence), which left a padded `null` falling
-    # through to the scalar branches: on a `{"type": ["boolean", "null"]}`
-    # parameter it reached the boolean branch and became `False`, silently
-    # turning "no value" into "off".
-    if keyword.lower() == "null":
-        return None
 
     if param_type.startswith(("int", "uint", "long", "short", "unsigned")):
         try:
