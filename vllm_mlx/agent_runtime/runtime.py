@@ -116,6 +116,19 @@ class AgentRuntime:
         self._require_status(run, AgentRunStatus.READY)
         self._require_no_pending_call(run)
 
+        restored_without_repeat_history = (
+            id(run) not in self._call_counts_by_run and run.tool_rounds > 0
+        )
+        if restored_without_repeat_history and not run.final_synthesis:
+            object.__setattr__(run, "final_synthesis", True)
+            run.append_event(
+                "synthesis.required",
+                {"reason": "repeat_history_unavailable_after_restore"},
+                now=self._clock(),
+            )
+        if id(run) not in self._call_counts_by_run:
+            self._call_counts_by_run[id(run)] = (run, {})
+
         already_final = run.final_synthesis
         final_synthesis = already_final or run.tool_rounds >= selected.max_tool_rounds
         # Snapshot the exact schema and risk used for this turn. The caller may
@@ -222,6 +235,7 @@ class AgentRuntime:
                     "without making progress. Answer using the available results."
                 ),
                 is_error=True,
+                executed=False,
                 safe_summary="Repeated tool call blocked; final synthesis required.",
             )
             run.append_event(
@@ -274,6 +288,8 @@ class AgentRuntime:
     ) -> AgentRuntimeOutput | None:
         """Resolve exactly one pending approval and return a denial observation."""
 
+        if type(approved) is not bool:
+            raise AgentRuntimeError("approved must be a boolean")
         self._require_status(run, AgentRunStatus.AWAITING_APPROVAL)
         call = self._pending_call(run)
         if call_id != call.id:
@@ -293,6 +309,7 @@ class AgentRuntime:
             call_id=call.id,
             content="The user denied this tool call.",
             is_error=True,
+            executed=False,
             safe_summary="User denied the tool call.",
         )
         self._complete_tool_result(run, denied)
@@ -364,6 +381,7 @@ class AgentRuntime:
         persisted_result: dict[str, JsonValue] = {
             "call_id": result.call_id,
             "is_error": result.is_error,
+            "executed": result.executed,
             "content_bytes": len(encoded),
             "content_sha256": hashlib.sha256(encoded).hexdigest(),
         }

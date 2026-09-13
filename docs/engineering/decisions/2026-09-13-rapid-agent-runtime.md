@@ -59,7 +59,9 @@ closed. This keeps policy identical without forcing macOS-only tools into Python
    Registry adapters must classify every tool explicitly; there is no
    permissive default risk.
 4. External side effects pause for an explicit approval result tied to the
-   exact pending call ID; a call ID may appear only once in a run.
+   exact pending call ID; a call ID may appear only once in a run. Restore
+   replays every external call and rejects an executed result without a prior
+   matching approval. Blocked/denied results are explicitly marked unexecuted.
 5. Repeating the same tool and arguments more than twice disables tools and
    forces final synthesis.
 6. Tool-round exhaustion reserves one tools-disabled final synthesis turn.
@@ -73,6 +75,8 @@ closed. This keeps policy identical without forcing macOS-only tools into Python
    tool results only to immediate execution/model turns; credentials must be
    resolved from opaque references out of band.
    Repeat fingerprints are runtime-local and are never serialized.
+   After restart, a run with prior tool history conservatively enters a
+   tools-disabled final synthesis because exact repeat history is unavailable.
 9. Host-generated denial and loop-guard observations are returned transiently
    to the adapter, so every model tool call receives a matching tool result.
 10. Tool results carry a short host-authored ledger block. It is not appended as

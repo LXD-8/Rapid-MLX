@@ -23,7 +23,11 @@
   cross-checks the model profile, budgets, counters, active policy, pending
   identity/risk, and terminal data against the immutable event history.
 - Tool risk is mandatory at the registry boundary. Repeat fingerprints are
-  held only inside the live runtime and are never serialized.
+  held only inside the live runtime and are never serialized. Restored runs
+  with prior tool history therefore force a tools-off synthesis turn.
+- Result metadata distinguishes executed calls from denied/loop-blocked calls;
+  restore replays every external action and requires a prior exact approval for
+  every executed side effect. Approval input is a strict Python boolean.
 - MiniCPM5-2B defaults are six visible tools, eight tool rounds, one call per
   model turn, and two identical calls before forced final synthesis.
 - Focused unit tests, Ruff, and focused mypy pass.

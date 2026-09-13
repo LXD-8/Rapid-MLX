@@ -156,6 +156,7 @@ class AgentToolResult(_WireModel):
     call_id: StrictStr = Field(min_length=1, max_length=256)
     content: StrictStr = Field(max_length=262_144)
     is_error: StrictBool = False
+    executed: StrictBool = True
     safe_summary: StrictStr | None = Field(default=None, max_length=1024)
 
 
@@ -315,6 +316,66 @@ class AgentRun(_WireModel):
                 raise ValueError("tool.requested contains an invalid risk")
             requested_ids_list.append(call_id)
         requested_ids = tuple(requested_ids_list)
+
+        request_risks: dict[str, ToolRisk] = {}
+        approval_required: set[str] = set()
+        approval_resolved: dict[str, bool] = {}
+        completed_ids: set[str] = set()
+        for event in self.events:
+            data = event.data
+            if event.type == "tool.requested":
+                call_data = data.get("call")
+                if not isinstance(call_data, dict) or not isinstance(
+                    call_data.get("id"), str
+                ):
+                    raise ValueError("tool.requested contains malformed call metadata")
+                request_risks[call_data["id"]] = ToolRisk(data["risk"])
+            elif event.type == "approval.required":
+                call_id = data.get("call_id")
+                if (
+                    not isinstance(call_id, str)
+                    or request_risks.get(call_id) is not ToolRisk.EXTERNAL_SIDE_EFFECT
+                    or call_id in approval_required
+                ):
+                    raise ValueError(
+                        "approval.required does not match an external call"
+                    )
+                approval_required.add(call_id)
+            elif event.type == "approval.resolved":
+                call_id = data.get("call_id")
+                approved = data.get("approved")
+                if (
+                    not isinstance(call_id, str)
+                    or type(approved) is not bool
+                    or call_id not in approval_required
+                    or call_id in approval_resolved
+                ):
+                    raise ValueError(
+                        "approval.resolved does not match a pending approval"
+                    )
+                approval_resolved[call_id] = approved
+            elif event.type == "tool.completed":
+                result_data = data.get("result")
+                if not isinstance(result_data, dict):
+                    raise ValueError("tool.completed must contain result metadata")
+                call_id = result_data.get("call_id")
+                executed = result_data.get("executed")
+                if (
+                    not isinstance(call_id, str)
+                    or type(executed) is not bool
+                    or call_id not in request_risks
+                    or call_id in completed_ids
+                ):
+                    raise ValueError("tool.completed does not match one requested call")
+                completed_ids.add(call_id)
+                if (
+                    executed
+                    and request_risks[call_id] is ToolRisk.EXTERNAL_SIDE_EFFECT
+                    and approval_resolved.get(call_id) is not True
+                ):
+                    raise ValueError(
+                        "executed external call requires matching approval"
+                    )
         if self.model_turns != len(model_requests):
             raise ValueError("model_turns does not match event history")
         if self.tool_rounds != len(tool_requests):
@@ -366,18 +427,6 @@ class AgentRun(_WireModel):
                 raise ValueError("pending tool does not match latest tool request")
             if latest.get("risk") != self.pending_risk.value:
                 raise ValueError("pending risk does not match latest tool request")
-            completed_ids: set[str] = set()
-            for event in self.events:
-                if event.type != "tool.completed":
-                    continue
-                result_data = event.data.get("result")
-                if not isinstance(result_data, dict) or not isinstance(
-                    result_data.get("call_id"), str
-                ):
-                    raise ValueError(
-                        "tool.completed contains malformed result metadata"
-                    )
-                completed_ids.add(result_data["call_id"])
             if self.pending_call.id in completed_ids:
                 raise ValueError("pending call is already completed")
             if (
