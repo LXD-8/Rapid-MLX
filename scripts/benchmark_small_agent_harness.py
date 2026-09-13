@@ -228,7 +228,7 @@ TASKS = [
             "https://bench.test/cedar": "Cedar Mini official specifications. Battery life: 14 hours. Weight: 1.2 kg.",
             "https://bench.test/pine": "Pine Mini official specifications. Battery life: 19 hours. Weight: 1.4 kg.",
         },
-        required=["Pine", "5", "https://bench.test/cedar", "https://bench.test/pine"],
+        required=["Pine", "https://bench.test/cedar", "https://bench.test/pine"],
         required_tools=["search_web", "open_url"],
     ),
     Task(
@@ -782,7 +782,14 @@ def score_task(
             final,
             re.IGNORECASE | re.DOTALL,
         )
-        semantic_constraints_ok = bool(pine_is_longer and not reversed_or_negated)
+        gap_is_five_hours = re.search(
+            r"(?<![\d.])5(?:\s|-)+hours?\b",
+            final,
+            re.IGNORECASE,
+        )
+        semantic_constraints_ok = bool(
+            pine_is_longer and gap_is_five_hours and not reversed_or_negated
+        )
     if task.id == "search_release":
         corrected_claim = re.compile(
             r"(?:forum|rumor|claim).{0,100}(?:unsupported|not supported|does not support|doesn't support|incompatible|cannot run|can't run).{0,40}(?:wrong|false|incorrect|outdated)",
@@ -790,7 +797,7 @@ def score_task(
         )
         conclusion = corrected_claim.sub("", final)
         negative_support = re.search(
-            r"(?:unsupported|not supported|does not support|doesn't support|incompatible|cannot run|can't run)",
+            r"(?:unsupported|not supported|isn't supported|aren't supported|does not support|doesn't support|incompatible|not compatible|isn't compatible|cannot run|can't run)",
             conclusion,
             re.IGNORECASE,
         )
@@ -812,12 +819,12 @@ def score_task(
             re.IGNORECASE | re.DOTALL,
         )
         saved_unavailable = re.search(
-            r"(?:saved chats?.{0,30}(?:unavailable|not\s+available|cannot|can't)|(?:cannot|can't).{0,30}(?:access|view|open).{0,30}saved chats?)",
+            r"(?:saved chats?.{0,30}(?:unavailable|not\s+available|aren't\s+available|isn't\s+available|cannot|can't)|(?:cannot|can't).{0,30}(?:access|view|open).{0,30}saved chats?)",
             final,
             re.IGNORECASE | re.DOTALL,
         )
         generation_continues = re.search(
-            r"(?:(?:will not|won't|does not|doesn't|not going to)[^.!?\n]{0,20}(?:pause|stop)|(?:live )?generation[^.!?\n]{0,30}(?:continue|keeps? running|remain available))",
+            r"(?:(?:will not|won't|does not|doesn't|isn't|aren't|not going to)[^.!?\n]{0,20}(?:pause|paused|stop|stopped)|(?:live )?generation[^.!?\n]{0,30}(?:continue|keeps? running|remain available))",
             final,
             re.IGNORECASE | re.DOTALL,
         )
@@ -843,6 +850,7 @@ def score_task(
         )
         semantic_constraints_ok = bool(old_mac_mini and premise_present)
     components = required_hits + tool_hits + tool_group_hits + required_read_hits
+    components += [task_effects_ok, artifact_effect_ok, semantic_constraints_ok]
     passing_test_after_mutation: bool | None = None
     if task.test_kind:
         components.append(test_ok)

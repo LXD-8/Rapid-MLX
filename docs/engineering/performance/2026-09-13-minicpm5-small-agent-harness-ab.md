@@ -104,8 +104,10 @@ choose and execute the next bounded action.
 
 ## Q4 results
 
-The fractional score is diagnostic.  Pass requires at least 0.8 **and every
-explicit required fact and tool action**. Evidence tasks must read each named
+The fractional score is diagnostic and includes semantic correctness, task
+side effects, and artifact correctness alongside explicit facts and tool use.
+Pass requires at least 0.8 **and every explicit required fact and tool action**.
+Evidence tasks must read each named
 fixture and open each required source URL. Tool tasks additionally require a
 final user-facing response; executable coding tasks must pass their
 deterministic tests in a successful test call after the final mutation.  Failed
@@ -114,23 +116,24 @@ edit or a complete rewrite; neither is privileged in the score.
 
 | Model / harness | Mean score | Passed | Mean wall time/task |
 | --- | ---: | ---: | ---: |
-| MiniCPM Q4 raw | 0.903 | 19/36 (52.8%) | 2.06 s |
-| MiniCPM Q4 enhanced | 0.919 | 25/36 (69.4%) | 4.39 s |
-| Qwen3.5 4B Q4 raw | 0.942 | 27/36 (75.0%) | 7.66 s |
-| Qwen3.5 4B Q4 enhanced | 0.948 | 28/36 (77.8%) | 11.71 s |
-| Qwen3-VL 4B Q4 raw | 0.933 | 24/36 (66.7%) | 12.60 s |
-| Qwen3-VL 4B Q4 enhanced | 0.949 | 26/36 (72.2%) | 15.34 s |
+| MiniCPM Q4 raw | 0.894 | 19/36 (52.8%) | 2.06 s |
+| MiniCPM Q4 enhanced | 0.921 | 25/36 (69.4%) | 4.39 s |
+| Qwen3.5 4B Q4 raw | 0.936 | 28/36 (77.8%) | 7.66 s |
+| Qwen3.5 4B Q4 enhanced | 0.946 | 28/36 (77.8%) | 11.71 s |
+| Qwen3-VL 4B Q4 raw | 0.914 | 24/36 (66.7%) | 12.60 s |
+| Qwen3-VL 4B Q4 enhanced | 0.930 | 26/36 (72.2%) | 15.34 s |
 
 | Category | Mini raw | Mini enhanced | Qwen3.5 raw | Qwen3.5 enhanced | Qwen VL raw | Qwen VL enhanced |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Creative | 6/9 | 5/9 | 9/9 | 9/9 | 9/9 | 9/9 |
 | Coding | 7/9 | 9/9 | 8/9 | 8/9 | 9/9 | 9/9 |
-| Search | 3/9 | 7/9 | 4/9 | 5/9 | 3/9 | 5/9 |
+| Search | 3/9 | 7/9 | 5/9 | 5/9 | 3/9 | 5/9 |
 | Organization | 3/9 | 4/9 | 6/9 | 6/9 | 3/9 | 3/9 |
 
 The enhanced harness adds six completed MiniCPM runs while MiniCPM remains
-2.7× faster by mean task wall time. Qwen3.5 improves from 27 to 28 completed
-runs and retains a three-run aggregate lead. This is enough to justify
+2.7× faster by mean task wall time. Qwen3.5 stays at 28 completed runs in both
+arms, while its effect-aware diagnostic score rises from 0.936 to 0.946; it
+retains a three-run aggregate lead. This is enough to justify
 implementing and testing the MiniCPM harness, not enough to change the default
 recommendation. The category split matters: enhanced MiniCPM led Qwen3.5 in
 coding and search, while Qwen3.5 led in creative constraints and organization.
@@ -220,7 +223,7 @@ screen or document content.
 
 | Model / harness | Mean score | Passed | Mean wall time/task |
 | --- | ---: | ---: | ---: |
-| MiniCPM Q8 enhanced | 0.892 | 23/36 (63.9%) | 4.78 s |
+| MiniCPM Q8 enhanced | 0.913 | 23/36 (63.9%) | 4.78 s |
 
 | Category | Passed |
 | --- | ---: |

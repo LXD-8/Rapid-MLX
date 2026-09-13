@@ -14,7 +14,8 @@
   workspace.
 - Under strict completion criteria, MiniCPM Q4 improved from 19/36 to 25/36
   with a compact plan, task-scoped tools, and tool-result task state. Qwen3.5
-  moved from 27/36 to 28/36 after strict rescoring.
+  held 28/36 in both arms after strict rescoring; its effect-aware diagnostic
+  score improved from 0.936 to 0.946.
 - Enhanced MiniCPM averaged 4.39 seconds per task versus 11.71 seconds for
   enhanced Qwen.  The speed/footprint advantage is real, but the three-run
   reliability gap does not justify changing the shipping default yet.

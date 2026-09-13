@@ -289,7 +289,7 @@ def test_threshold_does_not_hide_missing_required_fact(tmp_path: Path) -> None:
         [{"name": "search_web", "ok": True}],
         {},
     )
-    assert scored["score"] == 0.75
+    assert scored["score"] < 1.0
     assert scored["passed"] is False
 
 
@@ -343,11 +343,11 @@ def test_battery_comparison_rejects_wrong_two_digit_gap(tmp_path: Path) -> None:
         "https://bench.test/cedar https://bench.test/pine"
     )
     scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
-    assert scored["required_hits"][1] is False
+    assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
 
 
-def test_battery_numeric_boundary_allows_sentence_period(tmp_path: Path) -> None:
+def test_battery_gap_with_unit_allows_sentence_period(tmp_path: Path) -> None:
     task = next(task for task in BENCHMARK.TASKS if task.id == "search_battery")
     history = [
         {"name": "search_web", "ok": True, "arguments": {"query": "battery"}},
@@ -356,11 +356,8 @@ def test_battery_numeric_boundary_allows_sentence_period(tmp_path: Path) -> None
             for url in task.pages
         ],
     ]
-    final = (
-        "Pine Mini lasts longer by 5. https://bench.test/cedar https://bench.test/pine"
-    )
+    final = "Pine Mini lasts longer by 5 hours. https://bench.test/cedar https://bench.test/pine"
     scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
-    assert scored["required_hits"][1] is True
     assert scored["semantic_constraints_ok"] is True
 
 
@@ -380,6 +377,25 @@ def test_battery_rejects_reversed_or_negated_comparison(tmp_path: Path) -> None:
     scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
     assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
+    assert scored["score"] < 1.0
+
+
+def test_battery_requires_hours_for_the_numeric_gap(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "search_battery")
+    history = [
+        {"name": "search_web", "ok": True, "arguments": {"query": "battery"}},
+        *[
+            {"name": "open_url", "ok": True, "arguments": {"url": url}}
+            for url in task.pages
+        ],
+    ]
+    final = (
+        "Pine Mini lasts longer by 5 days. "
+        "https://bench.test/cedar https://bench.test/pine"
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
 
 
 def test_release_support_rejects_negative_paraphrase(tmp_path: Path) -> None:
@@ -393,6 +409,25 @@ def test_release_support_rejects_negative_paraphrase(tmp_path: Path) -> None:
         },
     ]
     final = "macOS 15 is unsupported. Minimum 14.5. https://docs.test/riverdb-3.2"
+    scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
+
+
+def test_release_support_rejects_contracted_negative(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "search_release")
+    history = [
+        {"name": "search_web", "ok": True, "arguments": {"query": "RiverDB"}},
+        {
+            "name": "open_url",
+            "ok": True,
+            "arguments": {"url": "https://docs.test/riverdb-3.2"},
+        },
+    ]
+    final = (
+        "RiverDB isn't supported on macOS 15; minimum 14.5. "
+        "https://docs.test/riverdb-3.2"
+    )
     scored = BENCHMARK.score_task(task, tmp_path, final, history, {})
     assert scored["semantic_constraints_ok"] is False
     assert scored["passed"] is False
@@ -596,6 +631,17 @@ def test_rewrite_rejects_negated_maintenance_facts(tmp_path: Path) -> None:
     response = (
         "Subject: Maintenance Friday 2–3 PM PT. Saved chats will remain "
         "unavailable, and live generation will not pause."
+    )
+    scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
+    assert scored["semantic_constraints_ok"] is False
+    assert scored["passed"] is False
+
+
+def test_rewrite_rejects_contracted_maintenance_negations(tmp_path: Path) -> None:
+    task = next(task for task in BENCHMARK.TASKS if task.id == "creative_rewrite")
+    response = (
+        "Subject: Maintenance Friday 2–3 PM PT. Saved chats aren't available, "
+        "and live generation isn't paused."
     )
     scored = BENCHMARK.score_task(task, tmp_path, response, [], {})
     assert scored["semantic_constraints_ok"] is False
