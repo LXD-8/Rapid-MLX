@@ -3,7 +3,7 @@
 - Receiving role: Atlas
 - Owner/host: Vector / Studio, with an Apple M2 Pro qualification run on Mini
 - Branch: `vector/qsa-stage1-fusion`
-- PR: pending
+- PR: #3440
 
 ## Verified facts
 
