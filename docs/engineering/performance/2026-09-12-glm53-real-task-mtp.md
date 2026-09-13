@@ -254,6 +254,35 @@ expressions. The existing 3.9 GB Q4 sidecar subsequently loaded with
 `strict=True`, and the 184 GB target completed the full qualification without
 exceeding the prior suite's peak.
 
+### Cache-owned MTP follow-up
+
+The maintainer's cache-owned MTP rebuild in mlx-vlm PR #2206 was subsequently
+tested with the same Q4 target, the existing 3.9 GB Q4 sidecar, PR #2231's
+strict-load fix, and the gate/up storage change from #2234. This matters
+because #2206's published measurements used a GLM FP8 target; Q4 compatibility
+and product-task quality were previously unverified.
+
+The Q4 combination passed all six real tasks in two consecutive MTP runs and
+was deterministic between runs. Its two-run per-task medians were 36.674,
+35.025, 32.781, 33.815, 33.494, and 11.534 tok/s, for a 33.655 tok/s median of
+category medians. One same-branch AR control also passed 6/6. MTP matched that
+control's complete reasoning and final response byte-for-byte while improving
+the six tasks by 1.253x, 1.306x, 1.188x, 1.297x, 1.179x, and 1.082x. The
+median paired gain was 1.221x.
+
+Relative to the previously qualified positioned-MTP plus gate/up result, the
+first cache-owned run moved median client throughput from 31.390 to 33.821
+tok/s (1.077x) and median server decode from 35.461 to 38.564 tok/s (1.087x).
+It also exceeded the same-width oMLX result of 31.813 tok/s by 6.3%, while
+retaining exact equivalence to its own AR control. Short-task reasoning differs
+from the older Rapid artifacts because #2206 enforces the thinking boundary
+inside the target distribution; the matching same-branch AR control shows
+that this is the branch's budget policy rather than speculative drift.
+
+This is a qualification result for the upstream combination, not a Rapid
+dependency update. #2206 remains under maintainer review and must land before
+the release integration can use it.
+
 The 184-189 GB working set also makes host health part of the benchmark gate.
 A follow-up stock run produced only 0.382 tok/s while the 256 GiB host was
 actively swapping after concurrent large-model campaigns; it was discarded.
