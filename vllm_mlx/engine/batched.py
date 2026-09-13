@@ -1425,7 +1425,7 @@ class BatchedEngine(BaseEngine):
     def _lifecycle_schedulers(self) -> tuple[Any, ...]:
         """Return every live scheduler, without duplicating test stubs."""
 
-        schedulers = []
+        schedulers: list[Any] = []
         if self._mllm_scheduler is not None:
             schedulers.append(self._mllm_scheduler)
         if self._engine is not None:
@@ -1441,7 +1441,7 @@ class BatchedEngine(BaseEngine):
     def _lifecycle_request_ids(self) -> set[str]:
         """Snapshot request IDs owned by either scheduler implementation."""
 
-        request_ids = set()
+        request_ids: set[str] = set()
         for scheduler in self._lifecycle_schedulers():
             snapshot = getattr(scheduler, "request_ids_snapshot", None)
             if callable(snapshot):
@@ -2679,6 +2679,8 @@ class BatchedEngine(BaseEngine):
             )
 
         if self._uses_mllm_request_path(images, videos):
+            mllm_scheduler = self._mllm_scheduler
+            assert mllm_scheduler is not None
             # Media requests always use the MLLM scheduler. Qualified hybrid
             # Qwen checkpoints additionally expose a zero-copy native-cache
             # text engine; every other MLLM keeps this branch for all requests.
@@ -2711,7 +2713,7 @@ class BatchedEngine(BaseEngine):
             ]
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
-                output = await self._mllm_scheduler.generate(
+                output = await mllm_scheduler.generate(
                     prompt=prompt,
                     images=images,
                     videos=videos,
@@ -2943,6 +2945,8 @@ class BatchedEngine(BaseEngine):
                 self.release_admission_reservation()
 
         if self._uses_mllm_request_path(images, videos):
+            mllm_scheduler = self._mllm_scheduler
+            assert mllm_scheduler is not None
             # Media always stays on MLLMScheduler; only qualified text-only
             # requests may use the shared-weight native-cache engine.
             # OpenAI-spec penalty passthrough (#512) — see ``generate()``
@@ -2959,7 +2963,7 @@ class BatchedEngine(BaseEngine):
             ]
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
-                request_id = await self._mllm_scheduler.add_request_async(
+                request_id = await mllm_scheduler.add_request_async(
                     request_id=request_id,
                     prompt=prompt,
                     images=images,
@@ -2992,7 +2996,7 @@ class BatchedEngine(BaseEngine):
             if request_admitted_event is not None:
                 request_admitted_event.set()
 
-            async for output in self._mllm_scheduler.stream_outputs(request_id):
+            async for output in mllm_scheduler.stream_outputs(request_id):
                 # ``logprobs`` is now wired through from
                 # ``MLLMScheduler._process_batch_responses`` (the
                 # ``MLLMBatchResponse`` carries them but the prior
