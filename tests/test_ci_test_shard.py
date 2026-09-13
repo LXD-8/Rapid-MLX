@@ -2,7 +2,11 @@ import configparser
 from pathlib import Path
 
 import pytest
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised by the 3.10 lane
+    import tomli as tomllib
 
 from scripts.ci_test_shard import TestFile, discover, ignored_paths, partition
 
