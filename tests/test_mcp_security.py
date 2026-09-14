@@ -888,3 +888,48 @@ class TestAllowedHighRiskToolsConfig:
 
         with pytest.raises(ValueError, match="allowed_high_risk_tools"):
             validate_config({"servers": {}, "allowed_high_risk_tools": [1, 2, 3]})
+
+
+class TestAgentReadOnlyToolsConfig:
+    """Only explicit namespaced declarations may bypass agent approval."""
+
+    def test_default_empty(self):
+        from vllm_mlx.mcp.types import MCPConfig
+
+        assert MCPConfig().agent_read_only_tools == []
+
+    def test_existing_positional_constructor_order_is_preserved(self):
+        from vllm_mlx.mcp.types import MCPConfig, MCPRejectedServer
+
+        rejected = [MCPRejectedServer(name="bad", error="invalid")]
+        cfg = MCPConfig({}, 12.0, ["shell__execute"], rejected)
+
+        assert cfg.rejected is rejected
+        assert cfg.agent_read_only_tools == []
+
+    def test_validate_config_reads_exact_namespaced_tools(self):
+        from vllm_mlx.mcp.config import validate_config
+
+        cfg = validate_config(
+            {"servers": {}, "agent_read_only_tools": ["files__read_file"]}
+        )
+
+        assert cfg.agent_read_only_tools == ["files__read_file"]
+
+    @pytest.mark.parametrize("value", ["files__read_file", ["read_file"], [1]])
+    def test_validate_config_rejects_ambiguous_or_malformed_values(self, value):
+        from vllm_mlx.mcp.config import validate_config
+
+        with pytest.raises(ValueError, match="agent_read_only_tools"):
+            validate_config({"servers": {}, "agent_read_only_tools": value})
+
+    @pytest.mark.parametrize(
+        "value", ["prefix-files__read_file-suffix", ["read_file"], [1]]
+    )
+    def test_from_dict_applies_the_same_read_only_validation(self, value):
+        from vllm_mlx.mcp.types import MCPConfig
+
+        with pytest.raises(ValueError, match="agent_read_only_tools"):
+            MCPConfig.from_dict(
+                {"servers": {}, "agent_read_only_tools": value}
+            )

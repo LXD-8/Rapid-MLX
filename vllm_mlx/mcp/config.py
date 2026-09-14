@@ -9,7 +9,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .types import MCPConfig, MCPRejectedServer, MCPServerConfig, select_server_map
+from .types import (
+    MCPConfig,
+    MCPRejectedServer,
+    MCPServerConfig,
+    select_server_map,
+    validate_agent_read_only_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,10 +214,15 @@ def validate_config(data: dict[str, Any], tolerant: bool = False) -> MCPConfig:
     ):
         raise ValueError("'allowed_high_risk_tools' must be a list of strings")
 
+    agent_read_only_tools = validate_agent_read_only_tools(
+        data.get("agent_read_only_tools", [])
+    )
+
     return MCPConfig(
         servers=servers,
         default_timeout=default_timeout,
         allowed_high_risk_tools=allowed_high_risk_tools,
+        agent_read_only_tools=agent_read_only_tools,
         rejected=rejected,
     )
 
