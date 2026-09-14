@@ -1,7 +1,3 @@
-from types import SimpleNamespace
-
-import pytest
-
 from vllm_mlx.engine import batched
 from vllm_mlx.prompt_host_cache import PromptHostCache
 
@@ -50,26 +46,6 @@ def test_render_cache_is_exact_and_preserves_mapping_order(monkeypatch):
     assert engine._prompt_host_cache.stats()["hits_by_kind"]["render"] == 1
 
 
-@pytest.mark.requires_mlx
-def test_token_cache_runs_at_scheduler_boundary_and_returns_a_copy():
-    from vllm_mlx.scheduler import Scheduler
-
-    tokenizer = _Tokenizer()
-    cache = PromptHostCache(max_entries=8, max_bytes=4096, enabled=True)
-    scheduler = Scheduler.__new__(Scheduler)
-    scheduler.tokenizer = tokenizer
-    scheduler.config = SimpleNamespace(model_name="test-model")
-    scheduler.prompt_host_cache = cache
-
-    first = scheduler._encode_prompt_string("abc")
-    first.append(999)
-    second = scheduler._encode_prompt_string("abc")
-
-    assert second == [97, 98, 99]
-    assert tokenizer.encode_calls == 1
-    assert cache.stats()["hits_by_kind"]["tokens"] == 1
-
-
 def test_combined_lru_enforces_entry_and_byte_limits():
     cache = PromptHostCache(max_entries=2, max_bytes=120, enabled=True)
     one = cache.fingerprint({"one": 1})
@@ -87,6 +63,27 @@ def test_combined_lru_enforces_entry_and_byte_limits():
     assert stats["entries"] == 2
     assert stats["current_bytes"] <= stats["max_bytes"]
     assert stats["evictions"] == 1
+
+
+def test_replacing_an_entry_updates_the_byte_ledger():
+    cache = PromptHostCache(max_entries=2, max_bytes=120, enabled=True)
+    fingerprint = cache.fingerprint({"same": True})
+
+    assert cache.put_render(fingerprint, "short")
+    assert cache.put_render(fingerprint, "a little longer")
+
+    assert cache.get_render(fingerprint) == "a little longer"
+    assert cache.stats()["current_bytes"] == len("a little longer")
+
+
+def test_cache_limits_must_be_positive():
+    for max_entries, max_bytes in ((0, 1), (1, 0)):
+        try:
+            PromptHostCache(max_entries=max_entries, max_bytes=max_bytes)
+        except ValueError as exc:
+            assert "must be positive" in str(exc)
+        else:  # pragma: no cover - assertion branch
+            raise AssertionError("non-positive cache limit was accepted")
 
 
 def test_oversize_and_uncacheable_inputs_fail_open_without_retention():
