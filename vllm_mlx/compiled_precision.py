@@ -171,7 +171,7 @@ def install_qwen35_attention_gate_precision(model: Any) -> int:
         return 0
     try:
         from mlx_lm.models import qwen3_next as q
-    except ImportError:
+    except ImportError:  # pragma: no cover - mlx-lm is a core dependency
         return 0
     attention_class = getattr(q, "Qwen3NextAttention", None)
     if not isinstance(attention_class, type):
