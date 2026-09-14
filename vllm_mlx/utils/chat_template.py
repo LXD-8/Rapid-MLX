@@ -2047,7 +2047,145 @@ def _collapse_harmony_system_messages(messages: list[dict]) -> list[dict]:
     return collapsed
 
 
+# Qwen3.5-family templates render an assistant row's ``<think>`` block only
+# while the row is part of the live multi-step tool loop (``loop.index0 >
+# ns.last_query_index``) and drop it once a later user query makes the row
+# history. The same tool-call row therefore renders differently in the tool
+# round and in the next turn, so the tool round's prompt is never a prefix of
+# the next turn's and the prefix cache re-prefills the whole conversation.
+# Qwen3.8's template resolved this upstream with ``preserve_thinking``
+# (default on): history rows keep the block. This literal identifies the
+# older asymmetric branch; ``_retain_tool_loop_think_blocks`` gives its
+# tool-loop rows the same stable rendering.
+_TOOL_LOOP_THINK_LIVE_LITERAL = (
+    "'\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content"
+)
+_ASSISTANT_ROW_START = "<|im_start|>assistant\n"
+
+
+def _template_drops_think_from_tool_loop_history(
+    template_applicator, *, tools: list[dict] | None = None
+) -> bool:
+    """True for templates with the Qwen3.5 live-only think-block branch."""
+    templates = _chat_template_strings(
+        getattr(template_applicator, "chat_template", None), tools=tools
+    )
+    return any(
+        _TOOL_LOOP_THINK_LIVE_LITERAL in template
+        and "ns.last_query_index" in template
+        and "<tool_response>" in template
+        and "preserve_thinking" not in template
+        for template in templates
+    )
+
+
+def _is_tool_response_message(message) -> bool:
+    """A ``tool`` row, or a user row the template treats as a tool response."""
+    if not isinstance(message, dict):
+        return False
+    if message.get("role") == "tool":
+        return True
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if isinstance(content, list) and _is_text_only_content_array(content):
+        content = _join_text_parts(content)
+    if not isinstance(content, str):
+        return False
+    stripped = content.strip()
+    return stripped.startswith("<tool_response>") and stripped.endswith(
+        "</tool_response>"
+    )
+
+
+def _assistant_reasoning_for_template(message: dict) -> str:
+    """The reasoning the template would render for ``message`` live."""
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str):
+        return reasoning.strip()
+    content = message.get("content")
+    if isinstance(content, list) and _is_text_only_content_array(content):
+        content = _join_text_parts(content)
+    if isinstance(content, str) and "</think>" in content:
+        return (
+            content.split("</think>")[0]
+            .rstrip("\n")
+            .split("<think>")[-1]
+            .lstrip("\n")
+            .strip()
+        )
+    return ""
+
+
+def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
+    """Render history tool-loop assistant rows the way they rendered live.
+
+    Every assistant row that is followed by a tool response was rendered
+    with its ``<think>`` block when it was the live turn. Give the same row
+    the same block once it is history, so the tool round's prompt stays a
+    byte prefix of the next turn's. Rows the template already rendered with
+    a block (the live loop) and rows not followed by a tool response are
+    left exactly as rendered.
+    """
+    assistants: list[tuple[dict, bool]] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        following = messages[index + 1] if index + 1 < len(messages) else None
+        assistants.append((message, _is_tool_response_message(following)))
+    if not any(followed for _, followed in assistants):
+        return prompt
+    pieces: list[str] = []
+    cursor = 0
+    row = 0
+    for match in re.finditer(re.escape(_ASSISTANT_ROW_START), prompt):
+        if row >= len(assistants):
+            break
+        message, followed = assistants[row]
+        row += 1
+        if not followed or prompt.startswith("<think>", match.end()):
+            continue
+        pieces.append(prompt[cursor : match.end()])
+        pieces.append(
+            "<think>\n" + _assistant_reasoning_for_template(message) + "\n</think>\n\n"
+        )
+        cursor = match.end()
+    pieces.append(prompt[cursor:])
+    return "".join(pieces)
+
+
 def apply_chat_template(
+    template_applicator,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    enable_thinking: bool | None = None,
+    model_name: str = "",
+    add_generation_prompt: bool = True,
+    chat_template_kwargs: dict | None = None,
+) -> str:
+    """Apply a chat template to messages with consistent fallback behavior.
+
+    Thin wrapper over ``_render_chat_template`` (which owns every fallback)
+    that afterwards gives Qwen3.5-style templates a stable rendering for
+    tool-loop assistant rows (see ``_retain_tool_loop_think_blocks``).
+    """
+    prompt = _render_chat_template(
+        template_applicator,
+        messages,
+        tools=tools,
+        enable_thinking=enable_thinking,
+        model_name=model_name,
+        add_generation_prompt=add_generation_prompt,
+        chat_template_kwargs=chat_template_kwargs,
+    )
+    if isinstance(prompt, str) and _template_drops_think_from_tool_loop_history(
+        template_applicator, tools=tools
+    ):
+        prompt = _retain_tool_loop_think_blocks(prompt, messages)
+    return prompt
+
+
+def _render_chat_template(
     template_applicator,
     messages: list[dict],
     tools: list[dict] | None = None,
