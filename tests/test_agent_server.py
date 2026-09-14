@@ -182,7 +182,7 @@ async def test_side_effect_waits_for_exact_approval_before_server_execution():
 
     assert registry.calls == []
     assert waiting.pending_action is not None
-    assert waiting.pending_action.arguments == {}
+    assert waiting.pending_action.arguments == {"body": "private message"}
     assert waiting.pending_action.approval_required is True
     assert "private message" not in service.events(created.id).model_dump_json()
 
@@ -219,7 +219,7 @@ async def test_denial_becomes_tool_observation_and_does_not_execute():
         service, created.id, AgentRunStatus.AWAITING_APPROVAL
     )
     assert waiting.pending_action is not None
-    assert waiting.pending_action.arguments == {}
+    assert waiting.pending_action.arguments == {"body": "no"}
 
     await service.approve(
         created.id,
@@ -288,7 +288,7 @@ async def test_client_side_effect_requires_approval_before_result():
         service, created.id, AgentRunStatus.AWAITING_APPROVAL
     )
     assert waiting.pending_action is not None
-    assert waiting.pending_action.arguments == {}
+    assert waiting.pending_action.arguments == {"body": "x"}
     opaque_id = waiting.pending_action.call_id
 
     with pytest.raises(AgentRunConflictError, match="awaiting_tool_result"):
@@ -843,7 +843,7 @@ async def test_mcp_audit_failure_never_rewrites_committed_tool_outcome(caplog):
             return None
 
         def record_execution(self, *_args, **_kwargs):
-            raise OSError("audit sink unavailable")
+            raise OSError("audit sink echoed secret-token-123")
 
     class Manager:
         def resolve_tool_target(self, _name):
@@ -871,6 +871,7 @@ async def test_mcp_audit_failure_never_rewrites_committed_tool_outcome(caplog):
         "Tool execution completed, but its MCP audit record could not be written."
     )
     assert "Failed to write MCP execution audit record" in caplog.text
+    assert "secret-token-123" not in caplog.text
     reset_config()
 
 

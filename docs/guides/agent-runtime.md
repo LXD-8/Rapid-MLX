@@ -53,6 +53,13 @@ run never redirects an already validated call to a replacement tool with the
 same name. The old connection may instead report unavailable; create a new run
 to use the reloaded registry.
 
+Consequential arguments appear only in the authenticated run view while the
+run is `awaiting_approval`, so the operator can inspect the exact recipient,
+path, command, amount, or other payload before deciding. They are never copied
+into the event stream. Server-executed runs hide them again immediately after
+approval; client-executed runs retain them only while the client must perform
+the approved action.
+
 ## Create and observe a run
 
 `server` execution asks Rapid to execute approved MCP calls. Omitting

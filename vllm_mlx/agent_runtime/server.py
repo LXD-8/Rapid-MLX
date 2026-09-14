@@ -212,11 +212,9 @@ class MCPToolRegistry:
         try:
             sandbox.record_execution(*args, **kwargs)
         except Exception:
-            logger.exception(
-                "Failed to write MCP execution audit record for %s on %s",
-                args[0] if args else "unknown tool",
-                args[1] if len(args) > 1 else "unknown server",
-            )
+            # Audit sinks are outside Rapid's trust boundary. Their exception
+            # text and traceback may echo payload values, so log neither.
+            logger.error("Failed to write MCP execution audit record")
             return False
         return True
 
@@ -954,7 +952,11 @@ class AgentServerService:
     def _view(self, entry: _ServerRun) -> AgentRunView:
         pending = entry.pending_action
         approval_required = entry.run.status is AgentRunStatus.AWAITING_APPROVAL
-        release_arguments = (
+        # Consequential arguments are transiently visible to the authenticated
+        # operator while a decision is required, but never enter AgentEvent.
+        # After approval, server execution hides them again; client execution
+        # retains them only because the client must perform the action.
+        release_arguments = approval_required or (
             entry.settings.execution == "client" and not approval_required
         )
         return AgentRunView(
