@@ -706,6 +706,10 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
             "bearer": "secret-bearer",
             "jwt": "secret-jwt",
             "access_key_id": "secret-access-key",
+            "headers": {"Bearer secret-token": "present"},
+            "keyboard_shortcut": "cmd-k",
+            "monkey_patch": True,
+            "keynote_id": 7,
             "nested": {
                 "password": "secret-password",
                 "accessToken": "secret-access-token",
@@ -725,6 +729,10 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
         "bearer": "[redacted]",
         "jwt": "[redacted]",
         "access_key_id": "[redacted]",
+        "headers": {"[redacted-key-1]": "[redacted]"},
+        "keyboard_shortcut": "cmd-k",
+        "monkey_patch": True,
+        "keynote_id": 7,
         "nested": {
             "password": "[redacted]",
             "accessToken": "[redacted]",

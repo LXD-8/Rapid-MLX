@@ -28,6 +28,7 @@ _SENSITIVE_KEY_WORDS = {
     "cookie",
     "credential",
     "jwt",
+    "key",
     "passphrase",
     "passwd",
     "password",
@@ -62,7 +63,7 @@ def is_sensitive_argument_key(key: str) -> bool:
     # redaction is preferable to leaking a credential under a novel spelling.
     if any(
         marker in key.casefold()
-        for marker in ("password", "token", "secret", "key", "credential", "auth")
+        for marker in ("password", "token", "secret", "credential", "auth")
     ):
         return True
     if collapsed in _SENSITIVE_KEY_WORDS or any(

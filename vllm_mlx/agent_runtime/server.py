@@ -55,10 +55,21 @@ def _approval_argument_summary(value: Any, *, key: str = "") -> Any:
     if key and is_sensitive_argument_key(key):
         return "[redacted]"
     if isinstance(value, dict):
-        return {
-            str(item_key): _approval_argument_summary(item_value, key=str(item_key))
-            for item_key, item_value in value.items()
-        }
+        summarized = {}
+        for index, (item_key, item_value) in enumerate(value.items(), start=1):
+            raw_key = str(item_key)
+            if is_sensitive_argument_key(raw_key):
+                display_key = (
+                    raw_key
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", raw_key)
+                    else f"[redacted-key-{index}]"
+                )
+                summarized[display_key] = "[redacted]"
+            else:
+                summarized[raw_key] = _approval_argument_summary(
+                    item_value, key=raw_key
+                )
+        return summarized
     if isinstance(value, list):
         return [_approval_argument_summary(item) for item in value]
     return value
