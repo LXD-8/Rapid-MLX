@@ -402,6 +402,7 @@ class _ServerRun:
     messages: list[dict[str, Any]]
     output: str | None = None
     pending_action: AgentToolCall | None = None
+    pending_risk: ToolRisk | None = None
     task: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     created_mono: float = field(default_factory=time.monotonic)
@@ -537,6 +538,7 @@ class AgentServerService:
                     self._schedule(entry, call=output.call)
             else:
                 entry.pending_action = None
+                entry.pending_risk = None
                 if output is None or output.observation is None:
                     raise AgentRunConflictError("denial observation is unavailable")
                 self._append_tool_observation(entry, output.observation)
@@ -577,6 +579,7 @@ class AgentServerService:
                 raise AgentRunConflictError(str(exc)) from exc
             self._append_tool_observation(entry, result)
             entry.pending_action = None
+            entry.pending_risk = None
             self._schedule(entry)
         return self._view(entry)
 
@@ -596,6 +599,7 @@ class AgentServerService:
                 return self._view(entry)
             self._runtime.cancel(entry.run)
             entry.pending_action = None
+            entry.pending_risk = None
             self._mark_terminal(entry)
         return self._view(entry)
 
@@ -618,6 +622,7 @@ class AgentServerService:
             if entry.run.status not in _TERMINAL_STATUSES:
                 self._runtime.cancel(entry.run)
                 entry.pending_action = None
+                entry.pending_risk = None
                 self._mark_terminal(entry)
 
     def _select_tools(
@@ -718,12 +723,14 @@ class AgentServerService:
                         continue
                     if entry.run.status is AgentRunStatus.AWAITING_APPROVAL:
                         entry.pending_action = turn.tool_calls[0]
+                        entry.pending_risk = entry.run.pending_risk
                         return
                     if output is None or output.call is None:
                         raise AgentRunConflictError(
                             "runtime did not release a pending action"
                         )
                     entry.pending_action = output.call
+                    entry.pending_risk = entry.run.pending_risk
                     if entry.settings.execution == "client":
                         return
                     await self._execute_server_call(entry, output.call)
@@ -738,6 +745,7 @@ class AgentServerService:
                 if entry.run.status not in _TERMINAL_STATUSES:
                     self._runtime.fail(entry.run, "agent_adapter_failure")
                 entry.pending_action = None
+                entry.pending_risk = None
                 self._mark_terminal(entry)
 
     async def _execute_server_call(
@@ -749,6 +757,7 @@ class AgentServerService:
             self._runtime.accept_tool_result(entry.run, result)
             self._append_tool_observation(entry, result)
             entry.pending_action = None
+            entry.pending_risk = None
         finally:
             entry.tool_in_flight = False
 
@@ -808,7 +817,7 @@ class AgentServerService:
                     call_id=pending.id,
                     name=pending.name,
                     arguments=(pending.arguments if release_arguments else {}),
-                    risk=entry.run.pending_risk or ToolRisk.READ_ONLY,
+                    risk=entry.pending_risk or ToolRisk.EXTERNAL_SIDE_EFFECT,
                     approval_required=approval_required,
                 )
                 if pending is not None

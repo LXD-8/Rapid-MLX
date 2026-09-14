@@ -274,6 +274,7 @@ async def test_client_side_effect_requires_approval_before_result():
     assert approved.status is AgentRunStatus.AWAITING_TOOL_RESULT
     assert approved.pending_action is not None
     assert approved.pending_action.arguments == {"body": "x"}
+    assert approved.pending_action.risk is ToolRisk.EXTERNAL_SIDE_EFFECT
     await service.submit_result(
         created.id, AgentToolResultRequest(call_id=call.id, content="sent")
     )
