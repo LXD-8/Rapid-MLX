@@ -118,8 +118,7 @@ def load_runtime(
     model_type = getattr(getattr(drafter, "config", None), "model_type", None)
     if kind != "mtp" or model_type != expected_model_type:
         raise RuntimeError(
-            "native MTP sidecar architecture mismatch: "
-            f"expected {expected_model_type}"
+            f"native MTP sidecar architecture mismatch: expected {expected_model_type}"
         )
     configured_block = int(getattr(drafter.config, "block_size", 0) or 0)
     if configured_block != block_size:

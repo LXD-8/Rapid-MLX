@@ -222,6 +222,7 @@ def test_glm_runtime_fails_before_resolving_sidecar(monkeypatch) -> None:
             expected_model_type="glm5_next_mtp",
         )
 
+
 def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
     from vllm_mlx import cli
     from vllm_mlx.speculative.native_mtp import server as native_server

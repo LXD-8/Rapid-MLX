@@ -77,7 +77,9 @@ class CacheTransaction:
         self.temporal = []
         self.append = []
         self.caches = caches
-        leaves = tuple({id(cache): cache for cache in iter_leaf_caches(caches)}.values())
+        leaves = tuple(
+            {id(cache): cache for cache in iter_leaf_caches(caches)}.values()
+        )
         self.identities = {id(cache) for cache in leaves}
         self.check_types(leaves)
         types = _cache_types()
@@ -204,7 +206,9 @@ class SpeculativeCache:
     def prefill(self, tokens, hidden, forward) -> None:
         mx = _mx()
         if tokens.shape[:2] != hidden.shape[:2] or tokens.shape[1] == 0:
-            raise ValueError("MTP requires target hidden states for every prompt token.")
+            raise ValueError(
+                "MTP requires target hidden states for every prompt token."
+            )
         shifted = mx.concatenate([tokens[:, 1:], self.bonus], axis=1)
         logits, draft_hidden = forward(
             shifted, hidden, self.draft, self.position + self.position_offset
@@ -286,7 +290,9 @@ class SpeculativeCache:
             if self.tokens is not None:
                 for context, emitted in zip(self.tokens, tokens):
                     context.extend(emitted)
-            for stats, draft, output in zip(self.stats, self._proposals.tolist(), tokens):
+            for stats, draft, output in zip(
+                self.stats, self._proposals.tolist(), tokens
+            ):
                 stats.record(draft, output)
         finally:
             self.abort()
@@ -377,9 +383,7 @@ def mtp_rounds(
     if not isinstance(max_tokens, int):
         raise ValueError("Rapid native MTP requires one integer token limit.")
     count = (
-        draft_model.config.block_size
-        if draft_block_size is None
-        else draft_block_size
+        draft_model.config.block_size if draft_block_size is None else draft_block_size
     ) - 1
     if count < 1:
         raise ValueError("MTP block size must contain a draft and target bonus.")

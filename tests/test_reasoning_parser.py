@@ -1241,9 +1241,7 @@ class TestGlm5Parser:
         for token in tokens:
             previous = accumulated
             accumulated += token
-            message = parser.extract_reasoning_streaming(
-                previous, accumulated, token
-            )
+            message = parser.extract_reasoning_streaming(previous, accumulated, token)
             if message is None:
                 continue
             if message.reasoning:
