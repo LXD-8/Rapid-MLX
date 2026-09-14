@@ -341,7 +341,9 @@ postprocessor but not to mlx-vlm generation, and it silently dropped Rapid's
 `reasoning_max_tokens` request field. Forwarding those as `enable_thinking`
 and `thinking_budget` restored bounded reasoning. The previously failing
 creative task returned to 388 completion tokens and passed all six hard
-constraints.
+constraints. Supplying `reasoning_max_tokens` alone now also opts into bounded
+thinking, consistent with the standard chat route; an explicit
+`enable_thinking=false` or server `--no-thinking` still takes precedence.
 
 A warm AR/MTP pair with the production-shaped per-task budgets then passed
 6/6 in both modes with byte-identical reasoning and final output:

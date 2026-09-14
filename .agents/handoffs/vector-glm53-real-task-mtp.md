@@ -116,6 +116,8 @@ Current handoff refresh: `vector/glm53-release-gate`, based on
   it and silently dropped `reasoning_max_tokens`. The fix maps the public Rapid
   cap to mlx-vlm's `thinking_budget`; the formerly failing creative task
   contracted from a truncated 1,024 tokens to a passing 388-token completion.
+  A cap without a duplicate `enable_thinking=true` now opts into bounded
+  thinking, while an explicit false value and `--no-thinking` remain dominant.
 
 ## Unresolved
 
