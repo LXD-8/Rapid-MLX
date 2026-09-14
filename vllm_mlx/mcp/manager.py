@@ -5,6 +5,7 @@ MCP Client Manager for handling multiple MCP server connections.
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 from .client import MCPClient
@@ -50,6 +51,13 @@ class MCPClientManager:
     def is_started(self) -> bool:
         """Check if manager has been started."""
         return self._started
+
+    @asynccontextmanager
+    async def tool_generation_lease(self):
+        """Prevent stop/reconnect/refresh from mutating a dispatched target."""
+
+        async with self._lock:
+            yield
 
     async def start(self):
         """
@@ -179,9 +187,10 @@ class MCPClientManager:
         against the SAME (server, tool) split :meth:`execute_tool` dispatches
         on — otherwise the route would validate one name and run another.
         """
-        server_name, tool_name, _ = openai_call_to_mcp(
+        parsed_server, tool_name, _ = openai_call_to_mcp(
             {"function": {"name": full_name, "arguments": "{}"}}
         )
+        server_name: str | None = parsed_server
         # If no server prefix, try to find the tool by bare name.
         if not server_name:
             server_name = self._find_tool_server(full_name)
@@ -283,13 +292,14 @@ class MCPClientManager:
 
     async def refresh_tools(self):
         """Refresh tools from all connected servers."""
-        tasks = [
-            client.refresh_tools()
-            for client in self._clients.values()
-            if client.is_connected
-        ]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._lock:
+            tasks = [
+                client.refresh_tools()
+                for client in self._clients.values()
+                if client.is_connected
+            ]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     async def reconnect(self, server_name: str | None = None):
         """
@@ -298,13 +308,14 @@ class MCPClientManager:
         Args:
             server_name: Specific server to reconnect, or None for all
         """
-        if server_name:
-            client = self._clients.get(server_name)
-            if client:
-                await client.disconnect()
-                await client.connect()
-        else:
-            # Reconnect all
-            for client in self._clients.values():
-                await client.disconnect()
-                await client.connect()
+        async with self._lock:
+            if server_name:
+                client = self._clients.get(server_name)
+                if client:
+                    await client.disconnect()
+                    await client.connect()
+            else:
+                # Reconnect all
+                for client in self._clients.values():
+                    await client.disconnect()
+                    await client.connect()

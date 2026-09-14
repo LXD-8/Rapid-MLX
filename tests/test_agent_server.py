@@ -1001,6 +1001,7 @@ async def test_mcp_audit_failure_never_rewrites_committed_tool_outcome(caplog):
 
 @pytest.mark.asyncio
 async def test_mcp_snapshot_never_executes_against_reloaded_registry():
+    from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
     from vllm_mlx.config import reset_config
@@ -1040,6 +1041,10 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
         def get_client(self, _name):
             return self.client
 
+        @asynccontextmanager
+        async def tool_generation_lease(self):
+            yield
+
     cfg = reset_config()
     advertised = Manager("advertised")
     cfg.mcp_manager = advertised
@@ -1064,6 +1069,70 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
     assert stale.executed is False
     assert calls == ["advertised"]
     reset_config()
+
+
+@pytest.mark.asyncio
+async def test_pinned_mcp_dispatch_leases_generation_until_call_finishes():
+    from types import SimpleNamespace
+
+    from vllm_mlx.agent_runtime.server import _PinnedMCPManager
+    from vllm_mlx.mcp.manager import MCPClientManager
+    from vllm_mlx.mcp.types import MCPTool, MCPToolResult
+
+    call_started = asyncio.Event()
+    release_call = asyncio.Event()
+    events = []
+    tool = MCPTool("same", "tool", "tool", {"type": "object"})
+
+    class Client:
+        is_connected = True
+        tools = [tool]
+
+        async def call_tool(self, *_args, **_kwargs):
+            events.append("call-started")
+            call_started.set()
+            await release_call.wait()
+            events.append("call-finished")
+            return MCPToolResult("same__tool", "ok")
+
+        async def disconnect(self):
+            events.append("disconnect")
+
+        async def connect(self):
+            events.append("connect")
+
+    class Manager:
+        tool_generation_lease = MCPClientManager.tool_generation_lease
+        reconnect = MCPClientManager.reconnect
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self.config = SimpleNamespace(
+                agent_read_only_tools=[], default_timeout=30.0
+            )
+            self._clients = {"same": Client()}
+
+        def get_all_tools(self):
+            return [tool]
+
+        def get_client(self, name):
+            return self._clients.get(name)
+
+    manager = Manager()
+    pinned = _PinnedMCPManager(manager)
+    execution = asyncio.create_task(pinned.execute_tool("same__tool", {}))
+    await call_started.wait()
+
+    reconnection = asyncio.create_task(manager.reconnect("same"))
+    await asyncio.sleep(0)
+    assert events == ["call-started"]
+
+    release_call.set()
+    result = await execution
+    await reconnection
+
+    assert result.content == "ok"
+    assert events == ["call-started", "call-finished", "disconnect", "connect"]
 
 
 @pytest.mark.asyncio
@@ -1328,6 +1397,14 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
     failed = await MCPToolRegistry().execute(call)
     assert failed.content == "expected failure"
     assert failed.executed is True
+
+    manager.result = MCPToolResult(
+        "tool", None, is_error=True, error_message="x" * 300_000
+    )
+    long_error = await MCPToolRegistry().execute(call)
+    assert long_error.executed is True
+    assert long_error.is_error is True
+    assert long_error.content.endswith("[tool result truncated by Rapid]")
 
     manager.result = MCPToolResult("tool", "x" * 250_000)
     truncated = await MCPToolRegistry().execute(call)

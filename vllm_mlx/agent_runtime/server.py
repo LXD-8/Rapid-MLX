@@ -247,15 +247,16 @@ class _PinnedMCPManager:
         return None
 
     async def execute_tool(self, full_name: str, arguments: dict[str, Any]) -> Any:
-        target = self._target(full_name)
-        if target is None:
-            raise AgentToolExecutionError(executed=False)
-        _, bare_name, client, _ = target
-        return await client.call_tool(
-            bare_name,
-            arguments,
-            timeout=self.config.default_timeout,
-        )
+        async with self._manager.tool_generation_lease():
+            target = self._target(full_name)
+            if target is None:
+                raise AgentToolExecutionError(executed=False)
+            _, bare_name, client, _ = target
+            return await client.call_tool(
+                bare_name,
+                arguments,
+                timeout=self.config.default_timeout,
+            )
 
 
 def classify_mcp_tool(name: str, *, declared_read_only: Sequence[str] = ()) -> ToolRisk:
