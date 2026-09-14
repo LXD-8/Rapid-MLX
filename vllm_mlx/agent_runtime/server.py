@@ -49,6 +49,7 @@ _MAX_APPROVAL_DEPTH = 6
 _MAX_APPROVAL_ITEMS = 32
 _MAX_APPROVAL_TEXT_CHARS = 256
 _APPROVAL_TRUNCATED = "[truncated]"
+_CANCEL_JOIN_SECONDS = 1.0
 _SHUTDOWN_JOIN_SECONDS = 30.0
 
 
@@ -888,6 +889,14 @@ class AgentServerService:
                     pass
             else:
                 task.cancel()
+                done, pending = await asyncio.wait({task}, timeout=_CANCEL_JOIN_SECONDS)
+                if pending:
+                    raise AgentRunConflictError(
+                        "generation work did not stop before the cancellation deadline"
+                    )
+                for completed_task in done:
+                    if not completed_task.cancelled():
+                        completed_task.exception()
         async with entry.lock:
             if entry.run.status in _TERMINAL_STATUSES:
                 return self._view(entry)

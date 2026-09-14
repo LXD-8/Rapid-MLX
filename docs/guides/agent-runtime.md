@@ -158,7 +158,10 @@ curl -sS -X POST \
   http://127.0.0.1:8000/v1/agent/runs/RUN_ID/cancel
 ```
 
-Cancellation aborts the current model request and makes the run terminal.
+Cancellation aborts the current model request and normally makes the run
+terminal within one second. A custom generation driver that ignores
+cancellation receives an HTTP `409`; the run remains non-terminal and
+non-evictable until that work stops, after which the caller can retry cancel.
 If an MCP call has already been dispatched, Rapid does not pretend it was
 cancelled: it waits for that call's existing timeout/result, records the
 execution outcome, and only then marks the run cancelled. This makes completed

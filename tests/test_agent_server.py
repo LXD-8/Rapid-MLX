@@ -611,7 +611,9 @@ async def test_cancel_wins_when_model_driver_swallows_task_cancellation():
 
 
 @pytest.mark.asyncio
-async def test_cancel_does_not_wait_for_driver_that_swallows_cancellation():
+async def test_cancel_keeps_noncooperative_generation_non_terminal(monkeypatch):
+    import vllm_mlx.agent_runtime.server as agent_server
+
     started = asyncio.Event()
     swallowed = asyncio.Event()
     release = asyncio.Event()
@@ -625,17 +627,24 @@ async def test_cancel_does_not_wait_for_driver_that_swallows_cancellation():
             await release.wait()
             return AgentModelTurn(content="must not complete")
 
+    monkeypatch.setattr(agent_server, "_CANCEL_JOIN_SECONDS", 0.01)
     service = AgentServerService(registry=FakeRegistry(()), chat_driver=stubborn_driver)
     created = await service.create(AgentRunCreateRequest(goal="wait"), model="model")
     await started.wait()
 
-    cancelled = await asyncio.wait_for(service.cancel(created.id), timeout=0.5)
+    with pytest.raises(AgentRunConflictError, match="cancellation deadline"):
+        await asyncio.wait_for(service.cancel(created.id), timeout=0.5)
 
-    assert cancelled.status is AgentRunStatus.CANCELLED
     await swallowed.wait()
+    entry = service._entry(created.id)
+    assert entry.run.status is AgentRunStatus.AWAITING_MODEL
+    assert entry.terminal_mono is None
+    assert entry.task is not None and not entry.task.done()
+
     release.set()
-    await asyncio.sleep(0)
-    assert service.get(created.id).status is AgentRunStatus.CANCELLED
+    await entry.task
+    cancelled = await service.cancel(created.id)
+    assert cancelled.status is AgentRunStatus.CANCELLED
 
 
 @pytest.mark.asyncio
