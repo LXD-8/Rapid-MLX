@@ -7306,7 +7306,7 @@ class Scheduler:
                 "Continuous batching requires a tokenizer with encode support."
             )
 
-        host_cache = getattr(self, "prompt_host_cache", None)
+        host_cache: PromptHostCache | None = getattr(self, "prompt_host_cache", None)
         if host_cache is None or not host_cache.enabled:
             return [int(token) for token in encoder.encode(prompt)]
         base_tokenizer = getattr(encoder, "_tokenizer", encoder)

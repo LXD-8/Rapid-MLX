@@ -94,7 +94,7 @@ class PromptHostCache:
     def fingerprint(value: Any) -> str | None:
         return _fingerprint(value)
 
-    def _get(self, kind: str, fingerprint: str | None):
+    def _get(self, kind: str, fingerprint: str | None) -> str | tuple[int, ...] | None:
         if not self.enabled or fingerprint is None:
             if self.enabled and fingerprint is None:
                 with self._lock:

@@ -1142,7 +1142,7 @@ class BatchedEngine(BaseEngine):
         """Share the host cache with a concrete scheduler when one exists."""
 
         scheduler = getattr(getattr(async_engine, "engine", None), "scheduler", None)
-        host_cache = getattr(self, "_prompt_host_cache", None)
+        host_cache: PromptHostCache | None = getattr(self, "_prompt_host_cache", None)
         if scheduler is not None and host_cache is not None:
             scheduler.prompt_host_cache = host_cache
 
@@ -2616,7 +2616,7 @@ class BatchedEngine(BaseEngine):
                 else None
             )
         )
-        host_cache = getattr(self, "_prompt_host_cache", None)
+        host_cache: PromptHostCache | None = getattr(self, "_prompt_host_cache", None)
         render_fingerprint = (
             host_cache.fingerprint(
                 {
