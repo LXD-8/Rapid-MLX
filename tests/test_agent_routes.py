@@ -261,6 +261,8 @@ class _RouteService:
         return await self.approve(run_id, request)
 
     async def cancel(self, run_id):
+        if run_id == "conflict":
+            raise AgentRunConflictError("conflict")
         if run_id == "missing":
             raise AgentRunNotFoundError("missing")
         return self.view()
@@ -515,6 +517,7 @@ def test_agent_http_surface_maps_success_and_stable_failures(monkeypatch):
             == 409
         )
         assert client.post("/v1/agent/runs/run-1/cancel").status_code == 200
+        assert client.post("/v1/agent/runs/conflict/cancel").status_code == 409
         assert client.post("/v1/agent/runs/missing/cancel").status_code == 404
 
         assert (
@@ -572,6 +575,27 @@ async def test_agent_route_singleton_rejects_replacement_during_shutdown(monkeyp
     release.set()
     await closing
     assert agent_routes._service is None
+
+
+@pytest.mark.asyncio
+async def test_agent_route_singleton_retains_service_after_failed_shutdown(monkeypatch):
+    class Service:
+        async def close(self):
+            raise AgentRunCapacityError("live work remains")
+
+    original = Service()
+    monkeypatch.setattr(agent_routes, "_service", original)
+    monkeypatch.setattr(agent_routes, "_service_shutting_down", False)
+
+    with pytest.raises(AgentRunCapacityError, match="live work remains"):
+        await agent_routes.close_agent_service()
+
+    assert agent_routes._service is original
+    assert agent_routes._service_shutting_down is True
+    with pytest.raises(AgentRunCapacityError, match="shutting down"):
+        agent_routes.get_agent_service()
+    with pytest.raises(RuntimeError, match="survived"):
+        agent_routes.start_agent_service_lifecycle()
 
 
 def test_agent_route_singleton_is_lazy(monkeypatch):

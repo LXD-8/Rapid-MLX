@@ -56,13 +56,11 @@ async def close_agent_service() -> None:
             return
         _service_shutting_down = True
         service = _service
-    try:
-        if service is not None:
-            await service.close()
-    finally:
-        with _service_lock:
-            if _service is service:
-                _service = None
+    if service is not None:
+        await service.close()
+    with _service_lock:
+        if _service is service:
+            _service = None
 
 
 def start_agent_service_lifecycle() -> None:
@@ -222,5 +220,9 @@ async def submit_agent_tool_result(
 async def cancel_agent_run(run_id: str) -> AgentRunView:
     try:
         return await get_agent_service().cancel(run_id)
-    except (AgentRunNotFoundError, AgentRunCapacityError) as exc:
+    except (
+        AgentRunNotFoundError,
+        AgentRunConflictError,
+        AgentRunCapacityError,
+    ) as exc:
         raise _http_error(exc) from exc
