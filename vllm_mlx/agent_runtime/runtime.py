@@ -8,7 +8,12 @@ import json
 import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from functools import wraps
+from threading import RLock
+from typing import TypeVar, cast
 
+from jsonschema import ValidationError as JSONSchemaValidationError
+from jsonschema import validators
 from pydantic import JsonValue
 
 from .models import (
@@ -43,6 +48,20 @@ class AgentRuntimeOutput:
 class _LiveRunState:
     call_counts: dict[str, int] = field(default_factory=dict)
     pending_side_effect_call: AgentToolCall | None = None
+
+
+_Method = TypeVar("_Method", bound=Callable[..., object])
+
+
+def _serialized(method: _Method) -> _Method:
+    """Serialize P0 transitions; measured demand can justify finer locking."""
+
+    @wraps(method)
+    def locked(self: AgentRuntime, *args: object, **kwargs: object) -> object:
+        with self._transition_lock:
+            return method(self, *args, **kwargs)
+
+    return cast(_Method, locked)
 
 
 def _append_event(
@@ -103,6 +122,7 @@ class AgentRuntime:
         import time
 
         self._clock = clock or time.time
+        self._transition_lock = RLock()
         self._call_counts_by_run: dict[
             int, tuple[weakref.ReferenceType[AgentRun], _LiveRunState]
         ] = {}
@@ -111,9 +131,10 @@ class AgentRuntime:
         key = id(run)
 
         def discard(reference: weakref.ReferenceType[AgentRun]) -> None:
-            current = self._call_counts_by_run.get(key)
-            if current is not None and current[0] is reference:
-                self._call_counts_by_run.pop(key, None)
+            with self._transition_lock:
+                current = self._call_counts_by_run.get(key)
+                if current is not None and current[0] is reference:
+                    self._call_counts_by_run.pop(key, None)
 
         state = _LiveRunState()
         self._call_counts_by_run[key] = (weakref.ref(run, discard), state)
@@ -125,6 +146,7 @@ class AgentRuntime:
             raise AgentRuntimeError("run is not owned by this AgentRuntime")
         return entry[1]
 
+    @_serialized
     def create_run(
         self,
         *,
@@ -161,6 +183,7 @@ class AgentRuntime:
         self._track_run(run)
         return run
 
+    @_serialized
     def request_model(
         self,
         run: AgentRun,
@@ -211,6 +234,7 @@ class AgentRuntime:
         )
         return [tool.model_copy(deep=True) for tool in visible]
 
+    @_serialized
     def accept_model_turn(
         self,
         run: AgentRun,
@@ -254,6 +278,14 @@ class AgentRuntime:
         if call.name not in by_name:
             self._fail(run, "unadvertised_tool_call")
             return None
+        tool = by_name[call.name]
+        try:
+            validators.validator_for(tool.parameters)(tool.parameters).validate(
+                call.arguments
+            )
+        except JSONSchemaValidationError:
+            self._fail(run, "invalid_tool_arguments")
+            return None
         if call.id in run.used_call_ids:
             self._fail(run, "reused_tool_call_id")
             return None
@@ -265,7 +297,7 @@ class AgentRuntime:
         count = counts.get(fingerprint, 0) + 1
         counts[fingerprint] = count
         if count > selected.repeated_call_limit:
-            risk = by_name[call.name].risk
+            risk = tool.risk
             object.__setattr__(run, "tool_rounds", run.tool_rounds + 1)
             _append_event(
                 run,
@@ -300,7 +332,7 @@ class AgentRuntime:
             )
             return AgentRuntimeOutput(observation=blocked)
 
-        risk = by_name[call.name].risk
+        risk = tool.risk
         # Argument values remain in the adapter-owned model turn. Persist only
         # identity: approval/result correlation needs no payload values.
         object.__setattr__(
@@ -330,6 +362,7 @@ class AgentRuntime:
             return AgentRuntimeOutput(call=call)
         return None
 
+    @_serialized
     def resolve_approval(
         self,
         run: AgentRun,
@@ -374,6 +407,7 @@ class AgentRuntime:
         self._complete_tool_result(run, denied)
         return AgentRuntimeOutput(observation=denied)
 
+    @_serialized
     def accept_tool_result(self, run: AgentRun, result: AgentToolResult) -> None:
         self._require_status(run, AgentRunStatus.AWAITING_TOOL_RESULT)
         call = self._pending_call(run)
@@ -399,6 +433,7 @@ class AgentRuntime:
         object.__setattr__(run, "visible_tools", ())
         object.__setattr__(run, "status", AgentRunStatus.READY)
 
+    @_serialized
     def cancel(self, run: AgentRun) -> None:
         if run.status in {
             AgentRunStatus.COMPLETED,

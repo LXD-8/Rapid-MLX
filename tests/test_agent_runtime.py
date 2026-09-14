@@ -2,6 +2,8 @@
 
 import gc
 import weakref
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 from pydantic import ValidationError
@@ -75,6 +77,11 @@ def test_tool_arguments_are_json_only_at_the_wire_boundary():
 def test_tool_risk_is_required_at_registry_boundary():
     with pytest.raises(ValidationError, match="risk"):
         ToolSpec(name="unclassified")
+
+
+def test_tool_parameters_must_be_a_valid_json_schema():
+    with pytest.raises(ValidationError, match="valid JSON Schema"):
+        ToolSpec(name="broken", risk=ToolRisk.READ_ONLY, parameters={"type": 7})
 
 
 def test_successful_tool_round_has_stable_events_and_roundtrips():
@@ -196,6 +203,32 @@ def test_unadvertised_tool_call_fails_closed():
     assert run.events[-1].type == "run.failed"
 
 
+def test_schema_incompatible_tool_arguments_fail_closed():
+    runtime = _runtime()
+    read = ToolSpec(
+        name="read_file",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        risk=ToolRisk.READ_ONLY,
+    )
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
+    runtime.request_model(run, [read])
+
+    output = runtime.accept_model_turn(
+        run,
+        AgentModelTurn(tool_calls=[_call(path=42)]),
+    )
+
+    assert output is None
+    assert run.status is AgentRunStatus.FAILED
+    assert run.failure_code == "invalid_tool_arguments"
+    assert not any(event.type == "tool.requested" for event in run.events)
+
+
 def test_tool_policy_is_snapshotted_before_the_model_turn():
     runtime = _runtime()
     source = ToolSpec(
@@ -263,6 +296,7 @@ def test_external_side_effect_pauses_for_approval_and_denial_is_evidence():
     assert run.events[-1].data["result"]["safe_summary"] == (
         "User denied the tool call."
     )
+    assert run.events[-1].data["result"]["executed"] is False
 
 
 def test_external_call_is_released_only_after_exact_approval():
@@ -289,6 +323,41 @@ def test_external_call_is_released_only_after_exact_approval():
     assert approved is not None
     assert approved.call is not None
     assert approved.call.arguments == {"text": "Ready"}
+
+
+def test_concurrent_approvals_release_an_external_call_only_once():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
+    runtime.request_model(run, [SEND])
+    runtime.accept_model_turn(
+        run,
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="send-1",
+                    name="send_message",
+                    arguments={"text": "Done"},
+                )
+            ]
+        ),
+    )
+    barrier = Barrier(2)
+
+    def approve():
+        barrier.wait()
+        try:
+            return runtime.resolve_approval(run, call_id="send-1", approved=True)
+        except AgentRuntimeError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outputs = list(pool.map(lambda _: approve(), range(2)))
+
+    released = [output for output in outputs if output is not None]
+    assert len(released) == 1
+    assert released[0].call is not None
+    assert released[0].call.id == "send-1"
+    assert [event.type for event in run.events].count("approval.resolved") == 1
 
 
 def test_stale_approval_does_not_authorize_the_pending_call():
@@ -337,6 +406,31 @@ def test_mismatched_tool_result_does_not_advance_the_run():
 
     assert run.status is AgentRunStatus.AWAITING_TOOL_RESULT
     assert run.pending_call is not None
+
+
+def test_concurrent_tool_results_complete_a_call_only_once():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
+    runtime.request_model(run, [READ])
+    runtime.accept_model_turn(run, AgentModelTurn(tool_calls=[_call()]))
+    barrier = Barrier(2)
+
+    def submit_result():
+        barrier.wait()
+        try:
+            runtime.accept_tool_result(
+                run,
+                AgentToolResult(call_id="call-1", content="done"),
+            )
+            return "accepted"
+        except AgentRuntimeError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: submit_result(), range(2)))
+
+    assert sorted(outcomes) == ["accepted", "rejected"]
+    assert [event.type for event in run.events].count("tool.completed") == 1
 
 
 def test_tool_result_content_is_transient_not_persisted_in_the_event_log():

@@ -8,6 +8,7 @@ import uuid
 from enum import Enum
 from typing import Literal, cast
 
+from jsonschema import validators
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -90,6 +91,10 @@ class ToolSpec(_WireModel):
             raise ValueError("tool parameters must be valid JSON") from exc
         if not isinstance(decoded, dict):
             raise ValueError("tool parameters must be a JSON object")
+        try:
+            validators.validator_for(decoded).check_schema(decoded)
+        except Exception as exc:
+            raise ValueError("tool parameters must be a valid JSON Schema") from exc
         return json.dumps(
             decoded,
             ensure_ascii=False,

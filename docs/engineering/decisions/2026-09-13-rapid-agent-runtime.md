@@ -59,7 +59,8 @@ forcing macOS-only tools into Python.
    rounds. P0 accepts one tool call per model turn for every profile.
 3. Tools not advertised for that exact turn fail closed.
    Registry adapters must classify every tool explicitly; there is no
-   permissive default risk.
+   permissive default risk. Calls are validated against the exact JSON Schema
+   snapshot shown to the model before any executable payload is released.
 4. External side effects pause for an explicit approval result tied to the
    exact pending call ID; their raw executable call is released only after
    `approved=True`. A call ID may appear only once in a run. Blocked/denied
@@ -81,6 +82,9 @@ forcing macOS-only tools into Python.
     It stays transient because it includes the goal, and is never copied into a
     wire event. It is not appended as a new user instruction; the A/B test showed
     that shape can restart the task.
+11. P0 serializes transitions with one runtime lock, preventing concurrent
+    approval/result requests from executing or completing the same call twice.
+    Per-run locking is deferred until measured contention justifies it.
 
 ### Deliberately absent from P0
 

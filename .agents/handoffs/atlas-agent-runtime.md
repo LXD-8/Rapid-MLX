@@ -15,16 +15,19 @@
 - The P0 kernel adds no dependency or process. It stores a complete immutable
   model-profile snapshot, snapshots the exact per-turn tool policy, and emits a
   versioned append-only event stream writable only by the reducer.
-- Raw call arguments and tool-result content are transient and never enter that
-  event stream. Request events retain call identity and argument names; result
-  events retain size, execution/error state, and an optional producer-authored
-  safe summary.
+- Raw call arguments, tool-result content, goal-bearing ledger context, and final
+  model content are transient and never enter that event stream. Request events
+  retain call identity and argument names; result/completion events retain safe
+  metadata only.
 - Call IDs are single-use and approvals match the exact pending ID. External
   calls remain runtime-private and are released to an executor only after a
   positive approval.
 - Tool risk is mandatory at the registry boundary. Repeat fingerprints are
   held only inside the live runtime and are never serialized. Weak tracking
   references prevent abandoned runs from being retained in memory.
+- Calls are validated against the exact advertised JSON Schema before release.
+  One runtime-level lock serializes P0 transitions so concurrent approval or
+  result requests cannot release/complete the same call twice.
 - Result metadata distinguishes executed calls from denied/loop-blocked calls;
   approval input is a strict Python boolean.
 - MiniCPM5-2B defaults are six visible tools, eight tool rounds, one call per
