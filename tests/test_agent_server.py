@@ -492,6 +492,30 @@ async def test_cancel_racing_approval_never_schedules_side_effect():
 
 
 @pytest.mark.asyncio
+async def test_cancel_wins_when_model_driver_swallows_task_cancellation():
+    started = asyncio.Event()
+
+    async def stubborn_driver(*_args):
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            return AgentModelTurn(content="must not complete")
+
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=stubborn_driver)
+    created = await service.create(AgentRunCreateRequest(goal="wait"), model="model")
+    await started.wait()
+
+    cancelled = await service.cancel(created.id)
+
+    assert cancelled.status is AgentRunStatus.CANCELLED
+    assert cancelled.output is None
+    assert "run.completed" not in [
+        event.type for event in service.events(created.id).events
+    ]
+
+
+@pytest.mark.asyncio
 async def test_cancel_after_side_effect_dispatch_preserves_outcome_before_cancel():
     started = asyncio.Event()
     release = asyncio.Event()

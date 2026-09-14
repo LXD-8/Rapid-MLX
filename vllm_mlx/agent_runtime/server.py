@@ -836,6 +836,8 @@ class AgentServerService:
                             visible,
                             entry.settings,
                         )
+                    if entry.cancel_requested:
+                        return
                     turn = self._replace_model_call_ids(entry, turn)
                     self._append_assistant_turn(entry, turn)
                     output = self._runtime.accept_model_turn(entry.run, turn)
