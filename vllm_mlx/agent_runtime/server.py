@@ -45,6 +45,33 @@ Rules:
 - Final answers must state the result and evidence; citations must be exact source URLs.
 """
 _MAX_TOOL_RESULT_CHARS = 240_000
+_SENSITIVE_ARGUMENT_KEY = re.compile(
+    r"(?:^|_)(?:api_?key|authorization|cookie|credential|password|private_?key|secret|token)(?:$|_)",
+    re.IGNORECASE,
+)
+
+
+def _approval_argument_summary(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    """Build a bounded operator preview without exposing credential fields."""
+
+    if key and _SENSITIVE_ARGUMENT_KEY.search(key):
+        return "[redacted]"
+    if depth >= 6:
+        return "[nested value omitted]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _approval_argument_summary(
+                item_value, key=str(item_key), depth=depth + 1
+            )
+            for item_key, item_value in list(value.items())[:64]
+        }
+    if isinstance(value, list):
+        return [
+            _approval_argument_summary(item, depth=depth + 1) for item in value[:64]
+        ]
+    if isinstance(value, str) and len(value) > 512:
+        return value[:512] + f"… [truncated; {len(value)} chars total]"
+    return value
 
 
 class AgentServerError(RuntimeError):
@@ -119,6 +146,7 @@ class AgentPendingAction(_WireModel):
     call_id: str
     name: str
     arguments: dict[str, Any]
+    approval_summary: dict[str, Any] | None = None
     risk: ToolRisk
     approval_required: bool
 
@@ -952,11 +980,7 @@ class AgentServerService:
     def _view(self, entry: _ServerRun) -> AgentRunView:
         pending = entry.pending_action
         approval_required = entry.run.status is AgentRunStatus.AWAITING_APPROVAL
-        # Consequential arguments are transiently visible to the authenticated
-        # operator while a decision is required, but never enter AgentEvent.
-        # After approval, server execution hides them again; client execution
-        # retains them only because the client must perform the action.
-        release_arguments = approval_required or (
+        release_arguments = (
             entry.settings.execution == "client" and not approval_required
         )
         return AgentRunView(
@@ -974,6 +998,11 @@ class AgentServerService:
                     call_id=pending.id,
                     name=pending.name,
                     arguments=(pending.arguments if release_arguments else {}),
+                    approval_summary=(
+                        _approval_argument_summary(pending.arguments)
+                        if approval_required
+                        else None
+                    ),
                     risk=entry.pending_risk or ToolRisk.EXTERNAL_SIDE_EFFECT,
                     approval_required=approval_required,
                 )

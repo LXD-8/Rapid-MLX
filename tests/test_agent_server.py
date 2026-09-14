@@ -27,6 +27,7 @@ from vllm_mlx.agent_runtime.server import (
     AgentToolResultRequest,
     AgentToolSelectionError,
     MCPToolRegistry,
+    _approval_argument_summary,
     classify_mcp_tool,
 )
 
@@ -182,7 +183,8 @@ async def test_side_effect_waits_for_exact_approval_before_server_execution():
 
     assert registry.calls == []
     assert waiting.pending_action is not None
-    assert waiting.pending_action.arguments == {"body": "private message"}
+    assert waiting.pending_action.arguments == {}
+    assert waiting.pending_action.approval_summary == {"body": "private message"}
     assert waiting.pending_action.approval_required is True
     assert "private message" not in service.events(created.id).model_dump_json()
 
@@ -219,7 +221,8 @@ async def test_denial_becomes_tool_observation_and_does_not_execute():
         service, created.id, AgentRunStatus.AWAITING_APPROVAL
     )
     assert waiting.pending_action is not None
-    assert waiting.pending_action.arguments == {"body": "no"}
+    assert waiting.pending_action.arguments == {}
+    assert waiting.pending_action.approval_summary == {"body": "no"}
 
     await service.approve(
         created.id,
@@ -288,7 +291,8 @@ async def test_client_side_effect_requires_approval_before_result():
         service, created.id, AgentRunStatus.AWAITING_APPROVAL
     )
     assert waiting.pending_action is not None
-    assert waiting.pending_action.arguments == {"body": "x"}
+    assert waiting.pending_action.arguments == {}
+    assert waiting.pending_action.approval_summary == {"body": "x"}
     opaque_id = waiting.pending_action.call_id
 
     with pytest.raises(AgentRunConflictError, match="awaiting_tool_result"):
@@ -662,6 +666,24 @@ def test_request_contract_rejects_duplicate_tools_and_non_boolean_controls():
             content="result",
             safe_summary="client-controlled event payload",
         )
+
+
+def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
+    summary = _approval_argument_summary(
+        {
+            "recipient": "ops@example.com",
+            "amount": 42,
+            "api_token": "secret-token",
+            "nested": {"password": "secret-password"},
+        }
+    )
+
+    assert summary == {
+        "recipient": "ops@example.com",
+        "amount": 42,
+        "api_token": "[redacted]",
+        "nested": {"password": "[redacted]"},
+    }
 
 
 def test_store_configuration_must_be_bounded():

@@ -53,12 +53,11 @@ run never redirects an already validated call to a replacement tool with the
 same name. The old connection may instead report unavailable; create a new run
 to use the reloaded registry.
 
-Consequential arguments appear only in the authenticated run view while the
-run is `awaiting_approval`, so the operator can inspect the exact recipient,
-path, command, amount, or other payload before deciding. They are never copied
-into the event stream. Server-executed runs hide them again immediately after
-approval; client-executed runs retain them only while the client must perform
-the approved action.
+While a run is `awaiting_approval`, its authenticated run view includes a
+Rapid-generated `approval_summary`. It preserves ordinary decision fields such
+as recipient, path, command, and amount, bounds long/nested values, and redacts
+credential-shaped keys. Neither that summary nor the original arguments enter
+the event stream.
 
 ## Create and observe a run
 
@@ -99,8 +98,9 @@ argument values, tool-result content, credentials, and model reasoning.
 ## Approve or deny an action
 
 When status is `awaiting_approval`, the run view contains one transient
-`pending_action` with only the call ID, tool name, risk, and an empty
-`arguments` object. Approval is tied to its exact call ID:
+`pending_action` with the call ID, tool name, risk, an empty `arguments` object,
+and the bounded `approval_summary` described above. Approval is tied to its
+exact call ID:
 
 ```bash
 curl -sS http://127.0.0.1:8000/v1/agent/runs/RUN_ID/approval \
