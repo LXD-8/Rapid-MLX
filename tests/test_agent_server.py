@@ -115,6 +115,24 @@ async def test_direct_answer_completes_without_tools_and_keeps_output_out_of_eve
 
 
 @pytest.mark.asyncio
+async def test_public_run_model_never_exposes_profile_filesystem_path():
+    service = AgentServerService(
+        registry=FakeRegistry(()),
+        chat_driver=ScriptedDriver(AgentModelTurn(content="Done.")),
+    )
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="x", model="friendly-name"),
+        model="/Users/private/models/minicpm",
+        request_model="friendly-name",
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    assert done.model == "friendly-name"
+    assert "/Users/private" not in done.model_dump_json()
+
+
+@pytest.mark.asyncio
 async def test_server_mode_executes_read_only_tool_and_attaches_transient_ledger():
     call = AgentToolCall(
         id="call-read", name=READ.name, arguments={"path": "private.txt"}
@@ -703,6 +721,36 @@ async def test_model_authored_call_id_is_replaced_before_history_and_events():
         "call_opaque"
     )
     assert secret not in service.events(created.id).model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_repeated_model_authored_call_id_fails_before_opaque_replacement():
+    repeated = "model-reused-id"
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)),
+        chat_driver=ScriptedDriver(
+            AgentModelTurn(
+                tool_calls=[
+                    AgentToolCall(
+                        id=repeated, name=READ.name, arguments={"path": "one"}
+                    )
+                ]
+            ),
+            AgentModelTurn(
+                tool_calls=[
+                    AgentToolCall(
+                        id=repeated, name=READ.name, arguments={"path": "two"}
+                    )
+                ]
+            ),
+        ),
+    )
+
+    created = await service.create(AgentRunCreateRequest(goal="Read"), model="model")
+    failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
+
+    assert failed.failure_code == "agent_adapter_failure"
+    assert repeated not in service.events(created.id).model_dump_json()
 
 
 @pytest.mark.asyncio

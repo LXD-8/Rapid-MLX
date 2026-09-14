@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -501,6 +502,7 @@ class _ServerRun:
     terminal_mono: float | None = None
     cancel_requested: bool = False
     tool_in_flight: bool = False
+    seen_model_call_ids: set[bytes] = field(default_factory=set)
 
 
 _TERMINAL_STATUSES = {
@@ -557,10 +559,13 @@ class AgentServerService:
         snapshot = getattr(self._registry, "snapshot", None)
         run_registry = snapshot() if callable(snapshot) else self._registry
         tools = self._select_tools(request.tool_names, profile, run_registry)
-        run = self._runtime.create_run(model=model, goal=request.goal, profile=profile)
+        public_model = request_model or model
+        run = self._runtime.create_run(
+            model=public_model, goal=request.goal, profile=profile
+        )
         entry = _ServerRun(
             run=run,
-            request_model=request_model or model,
+            request_model=public_model,
             settings=request,
             tools=tuple(tools),
             registry=run_registry,
@@ -801,7 +806,7 @@ class AgentServerService:
                             visible,
                             entry.settings,
                         )
-                    turn = self._replace_model_call_ids(turn)
+                    turn = self._replace_model_call_ids(entry, turn)
                     self._append_assistant_turn(entry, turn)
                     output = self._runtime.accept_model_turn(entry.run, turn)
                     if entry.run.status is AgentRunStatus.COMPLETED:
@@ -903,11 +908,21 @@ class AgentServerService:
             ]
         entry.messages.append(message)
 
-    def _replace_model_call_ids(self, turn: AgentModelTurn) -> AgentModelTurn:
+    def _replace_model_call_ids(
+        self, entry: _ServerRun, turn: AgentModelTurn
+    ) -> AgentModelTurn:
         """Replace model-authored identifiers before history or events see them."""
 
         if not turn.tool_calls:
             return turn
+        fingerprints = [
+            hashlib.sha256(call.id.encode("utf-8")).digest() for call in turn.tool_calls
+        ]
+        if len(set(fingerprints)) != len(fingerprints) or any(
+            value in entry.seen_model_call_ids for value in fingerprints
+        ):
+            raise AgentServerError("model returned a duplicate tool call ID")
+        entry.seen_model_call_ids.update(fingerprints)
         calls = [
             AgentToolCall(
                 id=self._call_id_factory(),
