@@ -48,13 +48,13 @@ class ShapeStableKVCache(_BaseCache):
         if not buckets or tuple(sorted(set(buckets))) != buckets or buckets[0] <= 0:
             raise ValueError("shape-stable KV buckets must be sorted positive values")
         self.buckets = buckets
-        self.keys = None
-        self.values = None
+        self.keys: mx.array | None = None
+        self.values: mx.array | None = None
         self.capacity = 0
         self.offset = mx.array(0, dtype=mx.int32)
         self._host_offset = 0
-        self._columns = None
-        self._rapid_compiled_owner = None
+        self._columns: mx.array | None = None
+        self._rapid_compiled_owner: Any | None = None
 
     def _bucket_for(self, needed: int) -> int:
         for bucket in self.buckets:
@@ -71,6 +71,7 @@ class ShapeStableKVCache(_BaseCache):
         next_keys = mx.zeros((batch, heads, capacity, key_dim), keys.dtype)
         next_values = mx.zeros((batch, heads, capacity, value_dim), values.dtype)
         if self.keys is not None:
+            assert self.values is not None
             live = self._host_offset
             next_keys[..., :live, :] = self.keys[..., :live, :]
             next_values[..., :live, :] = self.values[..., :live, :]
@@ -86,6 +87,7 @@ class ShapeStableKVCache(_BaseCache):
             if width == 0:
                 return False
             raise ValueError("cannot reserve an empty shape-stable KV cache")
+        assert self.values is not None
         needed = self._host_offset + width
         if needed <= self.capacity:
             return False
@@ -97,6 +99,7 @@ class ShapeStableKVCache(_BaseCache):
         needed = self._host_offset + width
         if self.keys is None or needed > self.capacity:
             self._allocate(keys, values, needed)
+        assert self.keys is not None and self.values is not None
         start = self.offset[None]
         self.keys = mx.slice_update(self.keys, keys, start, axes=(2,))
         self.values = mx.slice_update(self.values, values, start, axes=(2,))
@@ -111,6 +114,7 @@ class ShapeStableKVCache(_BaseCache):
         self.reserve(width)
         if self._columns is None or self._columns.size != self.capacity:
             self._columns = mx.arange(self.capacity, dtype=mx.int32)
+        assert self._columns is not None
         rows = self.offset + mx.arange(width, dtype=mx.int32)
         mask = self._columns[None, :] <= rows[:, None]
         if window_size is not None:
@@ -136,7 +140,8 @@ class ShapeStableKVCache(_BaseCache):
     def nbytes(self) -> int:
         if self.keys is None:
             return 0
-        return self.keys.nbytes + self.values.nbytes
+        assert self.values is not None
+        return int(self.keys.nbytes + self.values.nbytes)
 
     @property
     def state(self):
@@ -154,6 +159,7 @@ class ShapeStableKVCache(_BaseCache):
             self._columns = None
             return
         self.keys, self.values, offset = value
+        assert self.keys is not None
         self.capacity = int(self.keys.shape[2])
         self.offset = offset.astype(mx.int32)
         self._host_offset = int(self.offset.item())
@@ -164,10 +170,12 @@ class ShapeStableKVCache(_BaseCache):
         result = cls()
         if cache.keys is None:
             return result
+        assert cache.values is not None
         live = int(cache.offset)
         keys = cache.keys[..., :live, :]
         values = cache.values[..., :live, :]
         result._allocate(keys, values, live)
+        assert result.keys is not None and result.values is not None
         result.keys[..., :live, :] = keys
         result.values[..., :live, :] = values
         result.offset = mx.array(live, dtype=mx.int32)
@@ -184,6 +192,7 @@ class ShapeStableKVCache(_BaseCache):
             self._drain_owner("cache conversion")
         result = KVCache()
         if self.keys is not None:
+            assert self.values is not None
             live = self._host_offset
             result.keys = mx.contiguous(self.keys[..., :live, :])
             result.values = mx.contiguous(self.values[..., :live, :])
@@ -272,9 +281,10 @@ class CompiledDecodeStep:
         self.model = model
         self.cache = cache
         self.max_variants = max_variants
-        self.plan = []
-        self._kv_slots = []
+        self.plan: list[_KVSlot | _ArraysSlot] = []
+        self._kv_slots: list[_KVSlot] = []
         for index, layer in enumerate(cache):
+            slot: _KVSlot | _ArraysSlot
             if type(layer) is ShapeStableKVCache:
                 slot = _KVSlot(layer)
                 self._kv_slots.append(slot)
@@ -294,12 +304,12 @@ class CompiledDecodeStep:
             raise TypeError("compiled decode requires a full-attention KV cache")
         if len({slot.cache.size() for slot in self._kv_slots}) != 1:
             raise TypeError("full-attention KV positions are not synchronized")
-        self._variants = {}
-        self._pending = []
-        self.trace_counts = {}
+        self._variants: dict[tuple[Any, ...], tuple[Any, list[tuple[int, int]]]] = {}
+        self._pending: list[mx.array] = []
+        self.trace_counts: dict[tuple[Any, ...], int] = {}
         self.submission_count = 0
         self.completion_count = 0
-        self._poison_reason = None
+        self._poison_reason: str | None = None
 
     @property
     def poisoned(self) -> bool:
@@ -373,27 +383,27 @@ class CompiledDecodeStep:
         compiled, splits = entry
         state = []
         snapshots = []
-        for slot in self.plan:
-            state.extend(slot.collect())
-            snapshots.append(slot.snapshot())
+        for plan_slot in self.plan:
+            state.extend(plan_slot.collect())
+            snapshots.append(plan_slot.snapshot())
         try:
             output = compiled(tokens, *state)
             if is_new:
                 mx.eval(output)
         except Exception as error:
-            for slot, (low, high), snapshot in zip(
+            for plan_slot, (low, high), snapshot in zip(
                 self.plan, splits, snapshots, strict=True
             ):
-                slot.rollback(state[low:high], snapshot)
+                plan_slot.rollback(state[low:high], snapshot)
             raise self.poison(
                 error, phase="trace" if is_new else "submission"
             ) from error
         logits, next_state = output[0], output[1:]
-        for slot, (low, high), snapshot in zip(
+        for plan_slot, (low, high), snapshot in zip(
             self.plan, splits, snapshots, strict=True
         ):
-            slot.install(next_state[low:high])
-            slot.commit(snapshot, 1)
+            plan_slot.install(next_state[low:high])
+            plan_slot.commit(snapshot, 1)
         self._pending.append(logits)
         self.submission_count += 1
         return logits
@@ -591,7 +601,7 @@ def install_compiled_decode(
     original_filter = generation.filter
     state: dict[str, CompiledDecodeStep | None] = {"step": None}
     declined_uids: set[int] = set()
-    stats = {
+    stats: dict[str, Any] = {
         "attachments": 0,
         "fallbacks": 0,
         "traces": 0,

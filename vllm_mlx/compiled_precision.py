@@ -182,7 +182,8 @@ def install_qwen35_attention_gate_precision(model: Any) -> int:
     ]
     if not modules:
         return 0
-    if not getattr(attention_class, "_rapid_compiled_gate_precision", False):
+    dynamic_class = attention_class  # type: Any
+    if not getattr(dynamic_class, "_rapid_compiled_gate_precision", False):
 
         def patched(self, x, mask=None, cache=None):
             batch, length, _ = x.shape
@@ -219,8 +220,9 @@ def install_qwen35_attention_gate_precision(model: Any) -> int:
             output = output.transpose(0, 2, 1, 3).reshape(batch, length, -1)
             return self.o_proj(gated_product(gate, output))
 
-        attention_class.__call__ = patched
-        attention_class._rapid_compiled_gate_precision = True
+        dynamic_class.__call__ = patched
+        dynamic_class._rapid_compiled_gate_precision = True
     for module in modules:
-        module._rapid_compiled_gate_precision = True
+        dynamic_module = module  # type: Any
+        dynamic_module._rapid_compiled_gate_precision = True
     return len(modules)
