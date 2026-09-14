@@ -34,15 +34,17 @@ tool as read-only:
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/safe/root"]
     }
   },
-  "agent_read_only_tools": [
-    "files__read_file",
-    "files__list_directory"
-  ]
+  "agent": {
+    "read_only_tools": [
+      "files__read_file",
+      "files__list_directory"
+    ]
+  }
 }
 ```
 
 Do not put a write, delete, shell, messaging, payment, or other consequential
-tool in `agent_read_only_tools`. Name patterns are intentionally not trusted:
+tool in `agent.read_only_tools`. Name patterns are intentionally not trusted:
 a connector could call a mutating tool `get_and_delete`, so undeclared tools
 always pause for approval. The existing MCP sandbox still runs immediately
 before execution and may reject an approved call.

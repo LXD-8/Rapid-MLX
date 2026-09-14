@@ -116,7 +116,7 @@ The server adapter implements step 2 through `/v1/agent/runs`. It keeps at
 most 32 process-local runs, expires terminal runs after 15 minutes, calls the
 existing Chat Completions function directly, and projects only the existing MCP
 registry. Because MCP does not standardize risk metadata, an operator must list
-an exact namespaced tool in `agent_read_only_tools` before Rapid will execute it
+an exact namespaced tool in `agent.read_only_tools` before Rapid will execute it
 without per-call approval. Client execution mode exposes the same transient
 pending call and typed result boundary needed by step 3; it does not admit
 client-authored tool schemas, risk labels, or event summaries.

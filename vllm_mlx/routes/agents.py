@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..agent_runtime.server import (
@@ -75,12 +77,12 @@ async def create_agent_run(request: AgentRunCreateRequest) -> AgentRunView:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         profile_model = entry.model_path or entry.model_name
-        metadata = read_model_metadata(entry.model_path)
+        metadata = await asyncio.to_thread(read_model_metadata, entry.model_path)
         profile_model_config = metadata.config if metadata is not None else None
         profile_tool_call_parser = entry.tool_call_parser
         model_generation = entry
     elif cfg.model_path:
-        metadata = read_model_metadata(cfg.model_path)
+        metadata = await asyncio.to_thread(read_model_metadata, cfg.model_path)
         profile_model_config = metadata.config if metadata is not None else None
     try:
         return await get_agent_service().create(

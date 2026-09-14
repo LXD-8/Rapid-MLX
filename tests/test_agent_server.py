@@ -130,7 +130,10 @@ async def test_server_mode_executes_read_only_tool_and_attaches_transient_ledger
     )
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
-    assert registry.calls == [call]
+    assert len(registry.calls) == 1
+    assert registry.calls[0].name == call.name
+    assert registry.calls[0].arguments == call.arguments
+    assert registry.calls[0].id != call.id
     assert done.tool_rounds == 1
     second_history = driver.requests[1][1]
     assert second_history[-1]["role"] == "tool"
@@ -168,14 +171,17 @@ async def test_side_effect_waits_for_exact_approval_before_server_execution():
         await service.approve(
             created.id, AgentApprovalRequest(call_id="wrong", approved=True)
         )
+    opaque_id = waiting.pending_action.call_id
     approved = await service.approve(
-        created.id, AgentApprovalRequest(call_id=call.id, approved=True)
+        created.id, AgentApprovalRequest(call_id=opaque_id, approved=True)
     )
     assert approved.pending_action is not None
     assert approved.pending_action.arguments == {}
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
-    assert registry.calls == [call]
+    assert len(registry.calls) == 1
+    assert registry.calls[0].id == opaque_id
+    assert registry.calls[0].arguments == call.arguments
     assert done.output == "Sent."
 
 
@@ -197,7 +203,8 @@ async def test_denial_becomes_tool_observation_and_does_not_execute():
     assert waiting.pending_action.arguments == {}
 
     await service.approve(
-        created.id, AgentApprovalRequest(call_id=call.id, approved=False)
+        created.id,
+        AgentApprovalRequest(call_id=waiting.pending_action.call_id, approved=False),
     )
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
@@ -234,7 +241,7 @@ async def test_client_mode_releases_call_then_accepts_one_matching_result():
     await service.submit_result(
         created.id,
         AgentToolResultRequest(
-            call_id=call.id,
+            call_id=waiting.pending_action.call_id,
             content="client secret result",
             executed=False,
         ),
@@ -263,20 +270,21 @@ async def test_client_side_effect_requires_approval_before_result():
     )
     assert waiting.pending_action is not None
     assert waiting.pending_action.arguments == {}
+    opaque_id = waiting.pending_action.call_id
 
     with pytest.raises(AgentRunConflictError, match="awaiting_tool_result"):
         await service.submit_result(
-            created.id, AgentToolResultRequest(call_id=call.id, content="forged")
+            created.id, AgentToolResultRequest(call_id=opaque_id, content="forged")
         )
     approved = await service.approve(
-        created.id, AgentApprovalRequest(call_id=call.id, approved=True)
+        created.id, AgentApprovalRequest(call_id=opaque_id, approved=True)
     )
     assert approved.status is AgentRunStatus.AWAITING_TOOL_RESULT
     assert approved.pending_action is not None
     assert approved.pending_action.arguments == {"body": "x"}
     assert approved.pending_action.risk is ToolRisk.EXTERNAL_SIDE_EFFECT
     await service.submit_result(
-        created.id, AgentToolResultRequest(call_id=call.id, content="sent")
+        created.id, AgentToolResultRequest(call_id=opaque_id, content="sent")
     )
 
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
@@ -433,13 +441,17 @@ async def test_cancel_racing_approval_never_schedules_side_effect():
     created = await service.create(
         AgentRunCreateRequest(goal="Send"), model="minicpm5-2b-4bit"
     )
-    await wait_for_status(service, created.id, AgentRunStatus.AWAITING_APPROVAL)
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_APPROVAL
+    )
+    assert waiting.pending_action is not None
     entry = service._entry(created.id)
 
     await entry.lock.acquire()
     approval = asyncio.create_task(
         service.approve(
-            created.id, AgentApprovalRequest(call_id=call.id, approved=True)
+            created.id,
+            AgentApprovalRequest(call_id=waiting.pending_action.call_id, approved=True),
         )
     )
     await asyncio.sleep(0)
@@ -481,9 +493,13 @@ async def test_cancel_after_side_effect_dispatch_preserves_outcome_before_cancel
     created = await service.create(
         AgentRunCreateRequest(goal="Send"), model="minicpm5-2b-4bit"
     )
-    await wait_for_status(service, created.id, AgentRunStatus.AWAITING_APPROVAL)
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_APPROVAL
+    )
+    assert waiting.pending_action is not None
     await service.approve(
-        created.id, AgentApprovalRequest(call_id=call.id, approved=True)
+        created.id,
+        AgentApprovalRequest(call_id=waiting.pending_action.call_id, approved=True),
     )
     await started.wait()
 
@@ -495,7 +511,8 @@ async def test_cancel_after_side_effect_dispatch_preserves_outcome_before_cancel
 
     event_types = [event.type for event in service.events(created.id).events]
     assert cancelled.status is AgentRunStatus.CANCELLED
-    assert registry.calls == [call]
+    assert len(registry.calls) == 1
+    assert registry.calls[0].arguments == call.arguments
     assert event_types[-2:] == ["tool.completed", "run.cancelled"]
 
 
@@ -575,7 +592,38 @@ def test_event_cursor_returns_only_new_events():
     assert tail.events[0].type == "run.completed"
     assert tail.next_after == all_events.next_after
     assert ahead.events == []
-    assert ahead.next_after == 999
+    assert ahead.next_after == all_events.next_after
+
+
+@pytest.mark.asyncio
+async def test_model_authored_call_id_is_replaced_before_history_and_events():
+    secret = "copied-private-goal-and-credential"
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(id=secret, name=READ.name, arguments={"path": "private"})
+            ]
+        )
+    )
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)),
+        chat_driver=driver,
+        call_id_factory=lambda: "call_opaque",
+    )
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="private", execution="client"), model="model"
+    )
+    pending = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+
+    assert pending.pending_action is not None
+    assert pending.pending_action.call_id == "call_opaque"
+    assert service._entry(created.id).messages[-1]["tool_calls"][0]["id"] == (
+        "call_opaque"
+    )
+    assert secret not in service.events(created.id).model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -781,7 +829,10 @@ async def test_run_never_switches_to_replacement_model_generation():
         request_model="served",
         model_generation=first,
     )
-    await wait_for_status(service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT)
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
 
     registry.remove("canonical")
     registry.add(
@@ -795,7 +846,9 @@ async def test_run_never_switches_to_replacement_model_generation():
     )
     await service.submit_result(
         created.id,
-        AgentToolResultRequest(call_id="call", content="result"),
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id, content="result"
+        ),
     )
     failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
 

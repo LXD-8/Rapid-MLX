@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from threading import RLock
@@ -459,6 +460,7 @@ class AgentServerService:
         max_runs: int = 32,
         terminal_ttl_seconds: float = 900.0,
         monotonic: Callable[[], float] = time.monotonic,
+        call_id_factory: Callable[[], str] | None = None,
     ) -> None:
         if max_runs < 1:
             raise ValueError("max_runs must be positive")
@@ -470,6 +472,7 @@ class AgentServerService:
         self._max_runs = max_runs
         self._terminal_ttl_seconds = terminal_ttl_seconds
         self._monotonic = monotonic
+        self._call_id_factory = call_id_factory or (lambda: f"call_{uuid.uuid4().hex}")
         self._runs: dict[str, _ServerRun] = {}
         self._store_lock = RLock()
         self._closed = False
@@ -533,15 +536,15 @@ class AgentServerService:
 
     def events(self, run_id: str, *, after: int = 0) -> AgentEventsView:
         entry = self._entry(run_id)
+        latest = entry.run.events[-1].sequence if entry.run.events else 0
         events = [event for event in entry.run.events if event.sequence > after]
         return AgentEventsView(
             run_id=entry.run.id,
             status=entry.run.status,
             events=events,
-            next_after=max(
-                after,
-                entry.run.events[-1].sequence if entry.run.events else 0,
-            ),
+            # Never echo an ahead cursor: doing so would make a polling client
+            # skip every future event until the sequence happened to catch up.
+            next_after=latest,
         )
 
     async def approve(self, run_id: str, request: AgentApprovalRequest) -> AgentRunView:
@@ -736,6 +739,7 @@ class AgentServerService:
                             visible,
                             entry.settings,
                         )
+                    turn = self._replace_model_call_ids(turn)
                     self._append_assistant_turn(entry, turn)
                     output = self._runtime.accept_model_turn(entry.run, turn)
                     if entry.run.status is AgentRunStatus.COMPLETED:
@@ -808,6 +812,23 @@ class AgentServerService:
                 for call in turn.tool_calls
             ]
         entry.messages.append(message)
+
+    def _replace_model_call_ids(self, turn: AgentModelTurn) -> AgentModelTurn:
+        """Replace model-authored identifiers before history or events see them."""
+
+        if not turn.tool_calls:
+            return turn
+        calls = [
+            AgentToolCall(
+                id=self._call_id_factory(),
+                name=call.name,
+                arguments=call.arguments,
+            )
+            for call in turn.tool_calls
+        ]
+        if len({call.id for call in calls}) != len(calls):
+            raise AgentServerError("tool call ID generator returned a duplicate")
+        return turn.model_copy(update={"tool_calls": calls})
 
     def _append_tool_observation(
         self, entry: _ServerRun, result: AgentToolResult

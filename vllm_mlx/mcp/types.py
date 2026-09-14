@@ -13,9 +13,7 @@ logger = logging.getLogger(__name__)
 # Recognized non-server top-level config keys. A config with only these (and
 # no server map) is an intentional globals-only config, not a mistyped
 # server-key footgun — see select_server_map.
-_KNOWN_SETTING_KEYS = frozenset(
-    {"default_timeout", "allowed_high_risk_tools", "agent_read_only_tools"}
-)
+_KNOWN_SETTING_KEYS = frozenset({"default_timeout", "allowed_high_risk_tools", "agent"})
 
 
 def validate_agent_read_only_tools(value: Any) -> list[str]:
@@ -28,6 +26,18 @@ def validate_agent_read_only_tools(value: Any) -> list[str]:
             "'agent_read_only_tools' must be a list of namespaced tool strings"
         )
     return list(value)
+
+
+def select_agent_read_only_tools(data: dict[str, Any]) -> list[str]:
+    """Read agent policy from its unambiguous structured namespace."""
+
+    agent = data.get("agent", {})
+    if not isinstance(agent, dict):
+        raise ValueError("'agent' must be a dictionary")
+    unexpected = set(agent) - {"read_only_tools"}
+    if unexpected:
+        raise ValueError(f"unknown MCP agent setting(s): {sorted(unexpected)}")
+    return validate_agent_read_only_tools(agent.get("read_only_tools", []))
 
 
 def select_server_map(data: dict[str, Any]) -> dict[str, Any]:
@@ -211,9 +221,7 @@ class MCPConfig:
             servers=servers,
             default_timeout=data.get("default_timeout", 30.0),
             allowed_high_risk_tools=data.get("allowed_high_risk_tools", []),
-            agent_read_only_tools=validate_agent_read_only_tools(
-                data.get("agent_read_only_tools", [])
-            ),
+            agent_read_only_tools=select_agent_read_only_tools(data),
         )
 
 
