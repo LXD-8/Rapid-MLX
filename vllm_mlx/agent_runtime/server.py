@@ -854,6 +854,7 @@ class AgentServerService:
         async with entry.lock:
             if entry.run.status in _TERMINAL_STATUSES:
                 return self._view(entry)
+            self._record_unknown_client_outcome(entry)
             self._runtime.cancel(entry.run)
             entry.pending_action = None
             entry.pending_risk = None
@@ -876,11 +877,13 @@ class AgentServerService:
                     await task
                 except asyncio.CancelledError:
                     pass
-            if entry.run.status not in _TERMINAL_STATUSES:
-                self._runtime.cancel(entry.run)
-                entry.pending_action = None
-                entry.pending_risk = None
-                self._mark_terminal(entry)
+            async with entry.lock:
+                if entry.run.status not in _TERMINAL_STATUSES:
+                    self._record_unknown_client_outcome(entry)
+                    self._runtime.cancel(entry.run)
+                    entry.pending_action = None
+                    entry.pending_risk = None
+                    self._mark_terminal(entry)
 
     def _select_tools(
         self,
@@ -1114,6 +1117,34 @@ class AgentServerService:
                 "content": content,
             }
         )
+
+    def _record_unknown_client_outcome(self, entry: _ServerRun) -> None:
+        """Preserve uncertainty after client tool arguments have been released."""
+
+        pending = entry.pending_action
+        if (
+            entry.settings.execution != "client"
+            or entry.run.status is not AgentRunStatus.AWAITING_TOOL_RESULT
+            or pending is None
+        ):
+            return
+        result = AgentToolResult(
+            call_id=pending.id,
+            content=(
+                "Client tool execution outcome is unknown because the run was "
+                "cancelled; do not retry automatically."
+            ),
+            is_error=True,
+            executed=None,
+            safe_summary=(
+                "Client tool execution outcome is unknown after cancellation; "
+                "do not retry automatically."
+            ),
+        )
+        self._runtime.accept_tool_result(entry.run, result)
+        self._append_tool_observation(entry, result)
+        entry.pending_action = None
+        entry.pending_risk = None
 
     def _view(self, entry: _ServerRun) -> AgentRunView:
         pending = entry.pending_action

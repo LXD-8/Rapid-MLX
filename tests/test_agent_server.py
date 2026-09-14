@@ -317,6 +317,63 @@ async def test_client_side_effect_requires_approval_before_result():
 
 
 @pytest.mark.asyncio
+async def test_cancel_after_client_action_release_records_unknown_outcome():
+    call = AgentToolCall(id="call-send", name=SEND.name, arguments={"body": "x"})
+    service = AgentServerService(
+        registry=FakeRegistry((SEND,)),
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await service.create(
+        AgentRunCreateRequest(goal="Send", execution="client"), model="model"
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_APPROVAL
+    )
+    approved = await service.approve(
+        created.id,
+        AgentApprovalRequest(call_id=waiting.pending_action.call_id, approved=True),
+    )
+    assert approved.pending_action is not None
+    assert approved.pending_action.arguments == {"body": "x"}
+
+    cancelled = await service.cancel(created.id)
+
+    assert cancelled.status is AgentRunStatus.CANCELLED
+    assert cancelled.pending_action is None
+    events = service.events(created.id).events
+    assert [event.type for event in events[-2:]] == [
+        "tool.completed",
+        "run.cancelled",
+    ]
+    assert events[-2].data["result"]["executed"] is None
+    assert "unknown" in events[-2].data["result"]["safe_summary"].casefold()
+
+
+@pytest.mark.asyncio
+async def test_close_after_client_action_release_records_unknown_outcome():
+    call = AgentToolCall(id="call-read", name=READ.name, arguments={"path": "x"})
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)),
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await service.create(
+        AgentRunCreateRequest(goal="Read", execution="client"), model="model"
+    )
+    await wait_for_status(service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT)
+
+    await service.close()
+
+    closed = service.get(created.id)
+    assert closed.status is AgentRunStatus.CANCELLED
+    events = service.events(created.id).events
+    assert [event.type for event in events[-2:]] == [
+        "tool.completed",
+        "run.cancelled",
+    ]
+    assert events[-2].data["result"]["executed"] is None
+
+
+@pytest.mark.asyncio
 async def test_server_mode_rejects_client_result_injection():
     blocker = asyncio.Event()
 
