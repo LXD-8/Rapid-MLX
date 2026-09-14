@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -2851,14 +2851,16 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
     if expected is not None:
         if cfg.model_registry and hasattr(expected, "model_name"):
             try:
-                return cfg.model_registry.get_engine_if_entry(expected)
+                return cast(
+                    BaseEngine, cfg.model_registry.get_engine_if_entry(expected)
+                )
             except KeyError as exc:
                 raise HTTPException(
                     status_code=503,
                     detail="Agent run model generation is no longer available",
                 ) from exc
         if cfg.engine is expected:
-            return expected
+            return cast(BaseEngine, expected)
         raise HTTPException(
             status_code=503,
             detail="Agent run model generation is no longer available",
