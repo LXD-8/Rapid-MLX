@@ -20,9 +20,13 @@
   string/token equality.
 - The generic device-side B1-to-B2 broadcast idea was rejected: at 65,536
   tokens it ran at 0.46x physical-B2 speed and allocated 134.8 MB over baseline.
-- Focused engine/server/scheduler/template tests pass (437/437). The full suite
-  reached 24,333 passes; its 17 optional-dependency failures reproduce exactly
-  on clean `origin/main` with the same interpreter. Full PR validation remains.
+- Focused engine/server/scheduler/template tests pass (437/437). After the
+  declared optional test extras were installed, full unit passed 24,438 tests.
+- `pr_validate` returned `MERGE-SAFE`: targeted 224 passed, supply-chain and
+  lint gates passed. Its first run's Apple Silicon stress matrix passed four
+  model families across three integration surfaces; the repeated run skipped
+  stress and reused that receipt. Advisory diff coverage timed out and skipped
+  without affecting the verdict.
 
 ## Risks and unresolved questions
 
@@ -35,6 +39,6 @@
 
 ## Next concrete action
 
-Run full PR validation, update this handoff with the PR number, then queue if
-CI and self-review remain clean. After merge, benchmark static Qwen4 cohort
-batching as a separate spike rather than extending this branch.
+Atlas should merge/queue PR #3446 after hosted CI is green. After merge,
+benchmark static Qwen4 cohort batching as a separate spike rather than
+extending this branch.
