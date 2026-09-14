@@ -2359,14 +2359,26 @@ class _RecurrentRecordingModel(_ChunkRecordingModel):
 
     def __call__(self, input_ids, cache=None, **kwargs):
         out = super().__call__(input_ids, cache=cache, **kwargs)
-        seen = sum(seqlen for seqlen, _ in self.calls)
+        seqlen = input_ids.shape[1]
         for entry in cache or ():
             if hasattr(entry, "cache") and isinstance(entry.cache, list):
-                entry.cache = [mx.full((1, 2), float(seen))]
+                # Advance from whatever state the cache already holds so a
+                # resumed snapshot keeps absolute positions.
+                prior = (
+                    entry.cache[0]
+                    if entry.cache and entry.cache[0] is not None
+                    else None
+                )
+                seen = (
+                    float(prior[0, 0].item()) if prior is not None else 0.0
+                ) + seqlen
+                entry.cache = [mx.full((1, 2), seen)]
         return out
 
 
-def test_text_prefill_records_stride_checkpoints_onto_the_boundary_snapshot(monkeypatch):
+def test_text_prefill_records_stride_checkpoints_onto_the_boundary_snapshot(
+    monkeypatch,
+):
     from mlx_vlm.models.cache import ArraysCache
 
     from vllm_mlx.hybrid_state_checkpoints import collect_checkpoints
@@ -2414,5 +2426,9 @@ def test_text_prefill_checkpoints_continue_from_a_resumed_snapshot(monkeypatch):
 
     gen._run_vision_encoding(request, cache=cache)
 
-    # Positions are absolute prompt offsets: 10 (resumed) + 5 + 4 tokens.
-    assert request.hybrid_checkpoints[0].positions == (15,)
+    # Positions are absolute prompt offsets: 10 (resumed) + 5 + 4 tokens, and
+    # the recorded state is the one the model held at that position.
+    holder = request.hybrid_checkpoints[0]
+    assert holder.positions == (15,)
+    assert holder.arrays_at(15)[0].tolist() == [[15.0, 15.0]]
+    assert cache[0].cache[0].tolist() == [[20.0, 20.0]]
