@@ -66,6 +66,14 @@ class AgentToolSelectionError(AgentServerError):
     pass
 
 
+class AgentToolExecutionError(AgentServerError):
+    """Typed registry failure carrying whether dispatch may have occurred."""
+
+    def __init__(self, *, executed: bool) -> None:
+        super().__init__("tool registry execution failed")
+        self.executed = executed
+
+
 class _WireModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -367,7 +375,13 @@ class MCPToolRegistry:
                 error_message=type(exc).__name__,
                 execution_time_ms=(time.time() - started) * 1000,
             )
-            raise
+            return AgentToolResult(
+                call_id=call.id,
+                content="Tool execution failed after dispatch.",
+                is_error=True,
+                executed=True,
+                safe_summary="Tool execution failed after dispatch.",
+            )
         audit_recorded = self._record_execution(
             executor.sandbox,
             bare_name,
@@ -836,16 +850,32 @@ class AgentServerService:
         try:
             try:
                 result = await entry.registry.execute(call)
-            except Exception:
-                # Dispatch may already have committed a side effect. Preserve
-                # that uncertain/failed outcome as a completed tool attempt so
-                # cancellation and operators never see a retry-safe run error.
+            except AgentToolExecutionError as exc:
                 result = AgentToolResult(
                     call_id=call.id,
-                    content="Tool execution failed after dispatch.",
+                    content=(
+                        "Tool execution failed after dispatch."
+                        if exc.executed
+                        else "Tool execution failed before dispatch."
+                    ),
                     is_error=True,
-                    executed=True,
-                    safe_summary="Tool execution failed after dispatch.",
+                    executed=exc.executed,
+                    safe_summary=(
+                        "Tool execution failed after dispatch."
+                        if exc.executed
+                        else "Tool execution failed; no action was executed."
+                    ),
+                )
+            except Exception:
+                # Untyped registry failures are fail-closed as pre-dispatch.
+                # A custom registry that crossed its dispatch boundary must
+                # raise AgentToolExecutionError(executed=True).
+                result = AgentToolResult(
+                    call_id=call.id,
+                    content="Tool execution failed before dispatch.",
+                    is_error=True,
+                    executed=False,
+                    safe_summary="Tool execution failed; no action was executed.",
                 )
             self._runtime.accept_tool_result(entry.run, result)
             self._append_tool_observation(entry, result)

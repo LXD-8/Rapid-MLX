@@ -27,6 +27,7 @@ from vllm_mlx.api.models import (
     ToolCall,
 )
 from vllm_mlx.config import get_config, reset_config
+from vllm_mlx.middleware.auth import check_rate_limit, verify_api_key
 from vllm_mlx.routes import agents as agent_routes
 
 
@@ -469,5 +470,9 @@ def test_all_agent_routes_share_auth_and_rate_limit_dependencies():
     ]
 
     assert route_dependencies
-    assert all(len(dependencies) == 2 for dependencies in route_dependencies)
+    expected = {verify_api_key, check_rate_limit}
+    assert all(
+        {dependency.dependency for dependency in dependencies} == expected
+        for dependencies in route_dependencies
+    )
     assert get_config() is not None

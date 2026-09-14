@@ -23,6 +23,7 @@ from vllm_mlx.agent_runtime.server import (
     AgentRunCreateRequest,
     AgentRunNotFoundError,
     AgentServerService,
+    AgentToolExecutionError,
     AgentToolResultRequest,
     AgentToolSelectionError,
     MCPToolRegistry,
@@ -526,7 +527,7 @@ async def test_cancel_after_dispatched_tool_exception_records_outcome_then_cance
             self.calls.append(call)
             started.set()
             await release.wait()
-            raise ConnectionError("private transport detail")
+            raise AgentToolExecutionError(executed=True)
 
     call = AgentToolCall(id="model-id", name=SEND.name, arguments={"body": "x"})
     registry = RaisingRegistry((SEND,))
@@ -560,6 +561,38 @@ async def test_cancel_after_dispatched_tool_exception_records_outcome_then_cance
     assert (
         "private transport detail" not in service.events(created.id).model_dump_json()
     )
+
+
+@pytest.mark.asyncio
+async def test_untyped_registry_failure_is_fail_closed_as_pre_dispatch():
+    class FailingRegistry(FakeRegistry):
+        async def execute(self, _call):
+            raise RuntimeError("setup failed")
+
+    service = AgentServerService(
+        registry=FailingRegistry((READ,)),
+        chat_driver=ScriptedDriver(
+            AgentModelTurn(
+                tool_calls=[
+                    AgentToolCall(
+                        id="model-id", name=READ.name, arguments={"path": "x"}
+                    )
+                ]
+            ),
+            AgentModelTurn(content="Handled."),
+        ),
+    )
+
+    created = await service.create(AgentRunCreateRequest(goal="Read"), model="model")
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    completed = [
+        event
+        for event in service.events(done.id).events
+        if event.type == "tool.completed"
+    ]
+
+    assert len(completed) == 1
+    assert completed[0].data["result"]["executed"] is False
 
 
 def test_tool_selection_is_exact_bounded_and_read_first_by_default():
@@ -1104,8 +1137,10 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
     assert truncated.content.endswith("[tool result truncated by Rapid]")
 
     manager.result = RuntimeError("private exception")
-    with pytest.raises(RuntimeError, match="private exception"):
-        await MCPToolRegistry().execute(call)
+    uncertain = await MCPToolRegistry().execute(call)
+    assert uncertain.executed is True
+    assert uncertain.is_error is True
+    assert "private exception" not in uncertain.content
     assert audited[-1][1]["error_message"] == "RuntimeError"
     reset_config()
 
