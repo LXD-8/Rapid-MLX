@@ -194,6 +194,24 @@ struct ToolGuidanceTrailerTests {
         #expect(withdrawn[3].wireSuffix?.hasSuffix("\n\n") == false)
     }
 
+    @Test("The guidance says which message it binds, so an old stamp reads as history")
+    func guidanceIsScopedToItsOwnMessage() {
+        #expect(ChatViewModel.toolGuidance.contains("bind the answer to THIS message"))
+        #expect(ChatViewModel.toolGuidance.contains("A later message that has no tool result of its own is answered normally"))
+    }
+
+    @Test("Stripping removes only the terminal component the stamp joined")
+    func stripIsExactAndTerminal() {
+        let g = ChatViewModel.toolGuidance
+        #expect(ChatViewModel.strippingToolGuidance(from: nil) == nil)
+        #expect(ChatViewModel.strippingToolGuidance(from: g) == nil)
+        #expect(ChatViewModel.strippingToolGuidance(from: "[MESSAGE SENT]\nnow.\n\n" + g) == "[MESSAGE SENT]\nnow.")
+        // A trailer that merely quotes the guidance somewhere else is not ours.
+        let quoted = "note: " + g + "\n\n[MESSAGE SENT]\nnow."
+        #expect(ChatViewModel.strippingToolGuidance(from: quoted) == quoted)
+        #expect(ChatViewModel.strippingToolGuidance(from: "   ") == nil)
+    }
+
     @Test("The guidance counts toward the context-window trim budget")
     @MainActor
     func guidanceIsInsideTheTrimBudget() {

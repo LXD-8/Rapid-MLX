@@ -3011,6 +3011,17 @@ final class ChatViewModel {
     /// non-trimmable (hybrid) entries and the one older boundary that could
     /// have served it was already evicted by the tool loop's own requests.
     ///
+    /// The price of persistence is ~400 tokens of history per tool-bearing
+    /// turn (the trim counts them, see below). Against the alternative —
+    /// re-prefilling the whole conversation on the turn after every tool
+    /// call — it is the cheaper side by a wide margin: a 5.7k-token 27B
+    /// conversation re-prefilled costs ~20 s, while 400 extra history tokens
+    /// prefill in well under a second and sit inside a 32k+ window. The
+    /// guidance text itself says it binds only the message it rides and
+    /// that later messages without their own tool result are answered
+    /// normally, so an old stamp is a faithful record of that turn's prompt,
+    /// not a live instruction.
+    ///
     /// Same gate as before (#1549): tools must be advertised, and a row is
     /// only stamped when its own turn holds a tool result. The stamp is
     /// REBUILT, not appended: any guidance already in a row's trailer is
@@ -3048,9 +3059,12 @@ final class ChatViewModel {
     /// else was there.
     nonisolated static func strippingToolGuidance(from suffix: String?) -> String? {
         guard var remaining = suffix else { return nil }
-        if let range = remaining.range(of: toolGuidance) {
-            remaining.removeSubrange(range)
-            if remaining.hasSuffix("\n\n") { remaining.removeLast(2) }
+        // Only the terminal component this function joined: a trailer that
+        // merely mentions the text elsewhere is not ours to edit.
+        if remaining.hasSuffix("\n\n" + toolGuidance) {
+            remaining.removeLast(toolGuidance.count + 2)
+        } else if remaining == toolGuidance {
+            remaining = ""
         }
         return remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : remaining
     }
@@ -3356,7 +3370,7 @@ You have access to tools that fetch real-time information. When you use one of t
 
 8. If a tool result is an error, refusal, or user decline, state the reason written in that result. Never replace it with a different explanation, and never claim the tool lacks a capability unless the result itself says so.
 
-These rules apply to every tool, not just web search.
+These rules apply to every tool, not just web search. They bind the answer to THIS message and the tool results fetched for it. A later message that has no tool result of its own is answered normally; the tool results above remain ordinary conversation context for it.
 """
 
     /// Failure-specific instruction for the one correction round the tool loop
