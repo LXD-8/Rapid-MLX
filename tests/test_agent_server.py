@@ -516,6 +516,52 @@ async def test_cancel_after_side_effect_dispatch_preserves_outcome_before_cancel
     assert event_types[-2:] == ["tool.completed", "run.cancelled"]
 
 
+@pytest.mark.asyncio
+async def test_cancel_after_dispatched_tool_exception_records_outcome_then_cancel():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class RaisingRegistry(FakeRegistry):
+        async def execute(self, call):
+            self.calls.append(call)
+            started.set()
+            await release.wait()
+            raise ConnectionError("private transport detail")
+
+    call = AgentToolCall(id="model-id", name=SEND.name, arguments={"body": "x"})
+    registry = RaisingRegistry((SEND,))
+    service = AgentServerService(
+        registry=registry,
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await service.create(AgentRunCreateRequest(goal="Send"), model="model")
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_APPROVAL
+    )
+    assert waiting.pending_action is not None
+    await service.approve(
+        created.id,
+        AgentApprovalRequest(call_id=waiting.pending_action.call_id, approved=True),
+    )
+    await started.wait()
+
+    cancellation = asyncio.create_task(service.cancel(created.id))
+    await asyncio.sleep(0)
+    release.set()
+    cancelled = await cancellation
+
+    events = service.events(created.id).events
+    assert cancelled.status is AgentRunStatus.CANCELLED
+    assert [event.type for event in events[-2:]] == [
+        "tool.completed",
+        "run.cancelled",
+    ]
+    assert events[-2].data["result"]["executed"] is True
+    assert (
+        "private transport detail" not in service.events(created.id).model_dump_json()
+    )
+
+
 def test_tool_selection_is_exact_bounded_and_read_first_by_default():
     tools = [
         ToolSpec(name=f"mutate_{index}", risk=ToolRisk.EXTERNAL_SIDE_EFFECT)
@@ -929,6 +975,38 @@ async def test_mcp_unavailable_and_disappeared_calls_are_unexecuted():
     assert unavailable.executed is False
     assert unavailable.is_error is True
     assert audited[0][1]["error_message"] == "MCP server unavailable"
+    reset_config()
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_lookup_failure_is_audited_and_unexecuted():
+    from types import SimpleNamespace
+
+    from vllm_mlx.config import reset_config
+
+    audited = []
+
+    class Sandbox:
+        def record_execution(self, *args, **kwargs):
+            audited.append((args, kwargs))
+
+    class Manager:
+        def resolve_tool_target(self, _name):
+            raise ConnectionError("private disconnect detail")
+
+    cfg = reset_config()
+    cfg.mcp_manager = Manager()
+    cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
+
+    result = await MCPToolRegistry().execute(
+        AgentToolCall(id="call", name="files__read_file", arguments={})
+    )
+
+    assert result.executed is False
+    assert result.is_error is True
+    assert "private disconnect detail" not in result.content
+    assert audited[0][0][:2] == ("read_file", "files")
+    assert audited[0][1]["error_message"] == "MCP registry unavailable"
     reset_config()
 
 

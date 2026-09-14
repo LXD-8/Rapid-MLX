@@ -255,7 +255,27 @@ class MCPToolRegistry:
                 executed=False,
                 safe_summary="MCP was unavailable; no action was executed.",
             )
-        server_name, bare_name = manager.resolve_tool_target(call.name)
+        fallback_server, separator, fallback_tool = call.name.partition("__")
+        if not separator:
+            fallback_server, fallback_tool = "unknown", call.name
+        try:
+            server_name, bare_name = manager.resolve_tool_target(call.name)
+        except Exception:
+            self._record_execution(
+                executor.sandbox,
+                fallback_tool,
+                fallback_server,
+                call.arguments,
+                success=False,
+                error_message="MCP registry unavailable",
+            )
+            return AgentToolResult(
+                call_id=call.id,
+                content="The selected MCP tool is unavailable.",
+                is_error=True,
+                executed=False,
+                safe_summary="MCP registry was unavailable; no action was executed.",
+            )
         if server_name is None:
             return AgentToolResult(
                 call_id=call.id,
@@ -266,8 +286,12 @@ class MCPToolRegistry:
             )
         get_client = getattr(manager, "get_client", None)
         if callable(get_client):
-            client = get_client(server_name)
-            if client is None or not client.is_connected:
+            try:
+                client = get_client(server_name)
+                connected = client is not None and client.is_connected
+            except Exception:
+                connected = False
+            if not connected:
                 self._record_execution(
                     executor.sandbox,
                     bare_name,
@@ -786,7 +810,19 @@ class AgentServerService:
     ) -> None:
         entry.tool_in_flight = True
         try:
-            result = await entry.registry.execute(call)
+            try:
+                result = await entry.registry.execute(call)
+            except Exception:
+                # Dispatch may already have committed a side effect. Preserve
+                # that uncertain/failed outcome as a completed tool attempt so
+                # cancellation and operators never see a retry-safe run error.
+                result = AgentToolResult(
+                    call_id=call.id,
+                    content="Tool execution failed after dispatch.",
+                    is_error=True,
+                    executed=True,
+                    safe_summary="Tool execution failed after dispatch.",
+                )
             self._runtime.accept_tool_result(entry.run, result)
             self._append_tool_observation(entry, result)
             entry.pending_action = None
