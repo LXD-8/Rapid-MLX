@@ -1616,6 +1616,55 @@ async def test_close_fails_boundedly_if_generation_does_not_stop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_close_preserves_dispatched_tool_past_generation_join_budget(monkeypatch):
+    import vllm_mlx.agent_runtime.server as agent_server
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowRegistry(FakeRegistry):
+        async def execute(self, call):
+            self.calls.append(call)
+            started.set()
+            await release.wait()
+            return AgentToolResult(
+                call_id=call.id,
+                content="committed",
+                safe_summary="Tool completed.",
+            )
+
+    monkeypatch.setattr(agent_server, "_SHUTDOWN_JOIN_SECONDS", 0.01)
+    registry = SlowRegistry((READ,))
+    service = AgentServerService(
+        registry=registry,
+        chat_driver=ScriptedDriver(
+            AgentModelTurn(
+                tool_calls=[
+                    AgentToolCall(
+                        id="model-call", name=READ.name, arguments={"path": "x"}
+                    )
+                ]
+            )
+        ),
+    )
+    created = await service.create(AgentRunCreateRequest(goal="read"), model="model")
+    await started.wait()
+
+    shutdown = asyncio.create_task(service.close())
+    await asyncio.sleep(0.02)
+    assert not shutdown.done()
+    release.set()
+    await shutdown
+
+    events = service.events(created.id).events
+    assert [event.type for event in events[-2:]] == [
+        "tool.completed",
+        "run.cancelled",
+    ]
+    assert events[-2].data["result"]["executed"] is True
+
+
+@pytest.mark.asyncio
 async def test_schedule_rejects_parallel_driver_for_same_run():
     blocker = asyncio.Event()
 

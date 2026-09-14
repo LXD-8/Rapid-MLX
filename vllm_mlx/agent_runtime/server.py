@@ -907,14 +907,23 @@ class AgentServerService:
             task = entry.task
             if task is not None and not task.done() and not entry.tool_in_flight:
                 task.cancel()
-        active_tasks = {
+        tool_tasks = {
+            entry.task
+            for entry in entries
+            if entry.task is not None and not entry.task.done() and entry.tool_in_flight
+        }
+        # Dispatched MCP calls own their configured timeout and must settle so
+        # their executed/unknown outcome is recorded before engine teardown.
+        if tool_tasks:
+            await asyncio.gather(*tool_tasks, return_exceptions=True)
+        generation_tasks = {
             entry.task
             for entry in entries
             if entry.task is not None and not entry.task.done()
         }
-        if active_tasks:
+        if generation_tasks:
             done, pending = await asyncio.wait(
-                active_tasks, timeout=_SHUTDOWN_JOIN_SECONDS
+                generation_tasks, timeout=_SHUTDOWN_JOIN_SECONDS
             )
             for task in done:
                 if not task.cancelled():
