@@ -9,11 +9,12 @@ import Testing
 /// search cost the whole conversation two cold prefills (0.14.1, Qwen3.8-27B,
 /// 5.7k-token conversation: ~20 s each against 1.5 s for an append-only turn).
 ///
-/// These tests pin where the guidance lives now — the newest user row's
-/// wire-only trailer — and the property that placement buys: every row
-/// before the newest user message, the system row first of all, is
-/// byte-identical between the tool round and the rounds around it.
-@Suite("Tool guidance rides the newest user row")
+/// These tests pin where the guidance lives now — the wire-only trailer of
+/// each user row whose turn holds a tool result — and the property that
+/// placement buys: the prompt is append-only. The system row and every
+/// completed turn are byte-identical between the tool round and the rounds
+/// around it, and a row that earned the guidance keeps it on later turns.
+@Suite("Tool guidance rides the user rows")
 struct ToolGuidanceTrailerTests {
 
     private static let date = "[CURRENT DATE]\nToday is Friday, 12 September 2026."
@@ -78,7 +79,7 @@ struct ToolGuidanceTrailerTests {
         #expect(wire[5].wireSuffix == nil)
     }
 
-    @Test("The rows before the newest user message are byte-identical across the tool round")
+    @Test("The prompt is append-only across the tool round and the turn after it")
     func headOfThePromptIsStableAcrossTheToolRound() {
         let before = Self.assemble(Self.roundOne)
         let during = Self.assemble(Self.roundTwo)
@@ -93,13 +94,17 @@ struct ToolGuidanceTrailerTests {
         #expect(during[3].modelContent != before[3].modelContent)
         #expect(during[3].content == before[3].content)
 
-        // The next turn no longer carries a tool result, so the guidance is
-        // gone again — and it leaves from the user row it rode, not from the
-        // head of the prompt. Everything before that row is untouched.
+        // The next turn extends round two byte-for-byte: the row that earned
+        // the guidance keeps it (its turn still holds the tool result), so
+        // the engine resumes from the end of round two's prompt instead of
+        // re-prefilling from the row where a one-off trailer would have
+        // vanished. Only the brand-new user row is unstamped.
         #expect(after[0].content == during[0].content)
-        #expect(after[1] == during[1])
-        #expect(after[2] == during[2])
-        #expect(after[3].wireSuffix?.contains(ChatViewModel.toolGuidance) == false)
+        for index in 1..<during.count {
+            #expect(after[index] == during[index], "row \(index) must not change once its turn is complete")
+        }
+        #expect(after[3].wireSuffix?.hasSuffix(ChatViewModel.toolGuidance) == true)
+        #expect(after.last?.role == .user)
         #expect(after.last?.wireSuffix?.contains(ChatViewModel.toolGuidance) == false)
     }
 
@@ -122,7 +127,7 @@ struct ToolGuidanceTrailerTests {
         #expect(!wire.contains { $0.wireSuffix?.contains(ChatViewModel.toolGuidance) == true })
     }
 
-    @Test("On the wire, round two's body extends round one's up to the newest user row")
+    @Test("On the wire, each round's body extends the previous one")
     func wireBodySharesThePrefixUpToTheNewestUserRow() async throws {
         func request(_ messages: [ChatMessage]) -> ChatStreamClient.Request {
             ChatStreamClient.Request(alias: "test-model", messages: messages, tools: nil, supportsImageInput: false)
@@ -141,5 +146,15 @@ struct ToolGuidanceTrailerTests {
         #expect(two.contains(marker))
         #expect(!two.contains("\"content\":\"You have access to tools"),
                 "the guidance must not become a system/user row of its own")
+
+        // And the next turn's body starts with round two's, through the
+        // stamped user row and its tool rows, up to the newly appended
+        // assistant answer: the engine's exact/prefix lookup sees round two's
+        // stored prompt as a prefix of the next turn.
+        let threeData = try #require(await WireBodyCaptureProtocol.capture(request(Self.assemble(Self.nextTurn))))
+        let three = try #require(String(data: threeData, encoding: .utf8))
+        let toolRowCut = try #require(two.range(of: "temp_c")?.upperBound)
+        #expect(three.hasPrefix(String(two[..<toolRowCut])),
+                "the stamped user row and the tool rows behind it must serialize identically on the next turn")
     }
 }

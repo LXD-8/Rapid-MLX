@@ -2490,6 +2490,18 @@ final class ChatViewModel {
         // is cancelled, or comes back empty — a wrong-but-present answer beats
         // a blank message.
         var draftBeforeCorrection: String?
+        // ONE instant for the whole turn, shared by the date row and the
+        // clock trailer of every round. codex caught that two `Date()` calls
+        // can straddle local midnight, which would have the same request
+        // asserting "Today is the 11th" in its system row and "sent … the
+        // 12th" on its newest message. Taking it once per TURN rather than
+        // per round matters for the prefix cache too: the clock stamp is
+        // minute-granular, and a tool loop whose rounds straddle a minute
+        // boundary would otherwise grow an "answering now" line on the
+        // newest user row mid-loop and re-prefill everything behind it
+        // (measured on Qwen3.8-27B: the third round resumed from the 1547-
+        // token boundary instead of the 2054-token entry of the round before).
+        let requestInstant = Date()
 
         while toolExecutionsLeft > 0 || documentReadsLeft > 0 || isFinalSynthesisRound {
             toolRounds += 1
@@ -2533,12 +2545,6 @@ final class ChatViewModel {
             let definitions = isFinalSynthesisRound
                 ? []
                 : ChatViewModel.wireDefinitions(forAlias: wireAlias, enabled: offered)
-            // ONE instant for the whole assembly, shared with the clock
-            // trailer below. codex caught that two `Date()` calls can straddle
-            // local midnight, which would have the same request asserting
-            // "Today is the 11th" in its system row and "sent … the 12th" on
-            // its newest message.
-            let requestInstant = Date()
             // Inserted BEFORE the trim so its tokens are inside the budget the
             // trim works to, not added on top of a body already sized to fill
             // the window.
@@ -2587,12 +2593,12 @@ final class ChatViewModel {
                 on: history,
                 answeringAt: requestInstant
             )
-            // Ambient anti-confabulation guidance for a round that carries a
-            // tool result. Decided on the TRIMMED history so a trim that
-            // dropped the evidence drops the instruction with it (#1549), and
-            // stamped on the newest user row rather than the system row so
-            // the head of the prompt stays byte-identical across the tool
-            // round and the turn after it — see ``stampingToolGuidance``.
+            // Ambient anti-confabulation guidance for every user row whose
+            // turn carries a tool result. Decided on the TRIMMED history so a
+            // trim that dropped the evidence drops the instruction with it
+            // (#1549), and stamped on user rows rather than the system row so
+            // the prompt stays append-only across the tool round and every
+            // turn after it — see ``stampingToolGuidance``.
             history = ChatViewModel.stampingToolGuidance(
                 on: history,
                 toolsAdvertised: !definitions.isEmpty
@@ -2974,8 +2980,8 @@ final class ChatViewModel {
         }
     }
 
-    /// Ride the anti-confabulation guidance on the NEWEST user row as a
-    /// wire-only trailer, never on the system row.
+    /// Ride the anti-confabulation guidance on user rows as a wire-only
+    /// trailer, never on the system row.
     ///
     /// The system row is the first thing in every request and the engine's
     /// prefix cache reuses a stored prompt only up to the first differing
@@ -2984,30 +2990,43 @@ final class ChatViewModel {
     /// rewrote the head of the prompt twice per tool call, so a single web
     /// search cost the WHOLE conversation two cold prefills (0.14.1 on
     /// Qwen3.8-27B with a 5.7k-token conversation: ~20 s each, against 1.5 s
-    /// for an append-only turn). On the newest user row the request first
-    /// differs at that row, and the engine resumes from the message boundary
-    /// before it; the rows behind it, document extracts included, are reused.
+    /// for an append-only turn).
     ///
-    /// Same gate as before (#1549): tools must be advertised AND the rows
-    /// after the newest user message must hold a tool result. The caller
-    /// passes the trimmed history, so evidence that did not survive the trim
-    /// takes the instruction with it. Applied after ``stampingClockContext``,
-    /// so the guidance is joined behind the clock trailer.
+    /// Every user row whose turn (the rows up to the next user message)
+    /// holds a tool result carries the guidance, and keeps carrying it on
+    /// later turns — like the clock trailer, the stamp is a pure function of
+    /// the row's own turn, so the bytes of a row never change once the turn
+    /// behind it is complete. Stamping only the newest row was measured on
+    /// Qwen3.8-27B (Studio, 2026-09-13): the tool round resumed from the
+    /// boundary before that row (486 of 2033 tokens prefilled), but the next
+    /// turn diverged again exactly where the trailer had been removed and
+    /// re-prefilled 1982 tokens, because the engine keeps only eight
+    /// non-trimmable (hybrid) entries and the one older boundary that could
+    /// have served it was already evicted by the tool loop's own requests.
+    ///
+    /// Same gate as before (#1549): tools must be advertised, and a row is
+    /// only stamped when its own turn holds a tool result. The caller passes
+    /// the trimmed history, so evidence that did not survive the trim takes
+    /// the instruction with it. Applied after ``stampingClockContext``, so
+    /// the guidance is joined behind the clock trailer.
     nonisolated static func stampingToolGuidance(
         on messages: [ChatMessage],
         toolsAdvertised: Bool
     ) -> [ChatMessage] {
-        guard toolsAdvertised,
-            carriesToolResultForThisTurn(messages),
-            let index = messages.lastIndex(where: { $0.role == .user })
-        else { return messages }
+        guard toolsAdvertised else { return messages }
         var result = messages
-        let existing = result[index].wireSuffix.flatMap {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+        let userIndices = result.indices.filter { result[$0].role == .user }
+        for (n, index) in userIndices.enumerated() {
+            let turnEnd = n + 1 < userIndices.count ? userIndices[n + 1] : result.endIndex
+            guard result[result.index(after: index)..<turnEnd].contains(where: { $0.role == .tool })
+            else { continue }
+            let existing = result[index].wireSuffix.flatMap {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+            }
+            result[index].wireSuffix = [existing, toolGuidance]
+                .compactMap { $0 }
+                .joined(separator: "\n\n")
         }
-        result[index].wireSuffix = [existing, toolGuidance]
-            .compactMap { $0 }
-            .joined(separator: "\n\n")
         return result
     }
 
