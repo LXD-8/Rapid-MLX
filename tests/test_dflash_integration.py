@@ -1932,6 +1932,31 @@ def test_thinking_controls_map_to_mlx_vlm_generation_kwargs(
     assert generation_kwargs == expected
 
 
+@pytest.mark.parametrize(
+    ("no_thinking", "requested", "reasoning_max_tokens", "expected"),
+    [
+        (False, None, None, False),
+        (False, None, 23, True),
+        (False, False, 23, False),
+        (False, True, None, True),
+        (True, True, 23, False),
+    ],
+)
+def test_serial_thinking_resolution_preserves_explicit_precedence(
+    no_thinking, requested, reasoning_max_tokens, expected
+) -> None:
+    from vllm_mlx.speculative.dflash.server import _resolve_serial_thinking
+
+    assert (
+        _resolve_serial_thinking(
+            no_thinking=no_thinking,
+            requested=requested,
+            reasoning_max_tokens=reasoning_max_tokens,
+        )
+        is expected
+    )
+
+
 @_skip_without_mlx_vlm
 def test_no_thinking_server_flag_forces_enable_thinking_false(monkeypatch) -> None:
     """``--no-thinking`` server-side must force ``enable_thinking=False``
@@ -2000,6 +2025,23 @@ def test_request_enable_thinking_true_honored(monkeypatch) -> None:
         },
     )
     assert captured.get("enable_thinking") is True
+
+
+@_skip_without_mlx_vlm
+def test_reasoning_budget_implicitly_enables_bounded_thinking(monkeypatch) -> None:
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "reasoning_max_tokens": 23,
+        },
+    )
+    assert captured.get("enable_thinking") is True
+    assert captured["generation_kwargs"]["enable_thinking"] is True
+    assert captured["generation_kwargs"]["thinking_budget"] == 23
 
 
 @_skip_without_mlx_vlm

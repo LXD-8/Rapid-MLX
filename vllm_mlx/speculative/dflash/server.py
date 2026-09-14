@@ -180,6 +180,22 @@ def _apply_thinking_generation_kwargs(
         gen_kwargs["thinking_budget"] = reasoning_max_tokens
 
 
+def _resolve_serial_thinking(
+    *,
+    no_thinking: bool,
+    requested: bool | None,
+    reasoning_max_tokens: int | None,
+) -> bool:
+    """Resolve serial-server thinking with explicit user choices first."""
+    if no_thinking:
+        return False
+    if requested is not None:
+        return requested
+    # A concrete reasoning cap is itself an opt-in to bounded reasoning,
+    # matching the standard chat route's explicit-intent contract.
+    return reasoning_max_tokens is not None
+
+
 class _DFlashClientGoneError(Exception):
     """Raised inside the stream producer when a CONTENT-frame ``put`` blocks
     on a full SSE handoff queue past ``_STREAM_BACKPRESSURE_TIMEOUT_SECONDS``
@@ -930,11 +946,11 @@ def _build_app(
             # ``cfg.no_thinking`` consult that doesn't apply to dflash.
             from ...service.helpers import _extract_thinking_from_request
 
-            if no_thinking:
-                enable_thinking: bool | None = False
-            else:
-                enable_thinking = _extract_thinking_from_request(request)
-            effective_thinking = False if enable_thinking is None else enable_thinking
+            effective_thinking = _resolve_serial_thinking(
+                no_thinking=no_thinking,
+                requested=_extract_thinking_from_request(request),
+                reasoning_max_tokens=request.reasoning_max_tokens,
+            )
             if effective_thinking and not cfg.reasoning_parser_name:
                 raise HTTPException(
                     status_code=400,
