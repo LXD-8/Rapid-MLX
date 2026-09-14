@@ -91,6 +91,34 @@ async def test_chat_driver_reuses_non_stream_route_and_decodes_tool_call(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_chat_driver_rejects_output_limit_truncation(monkeypatch):
+    response = ChatCompletionResponse(
+        model="served",
+        choices=[
+            ChatCompletionChoice(
+                message=AssistantMessage(content="truncated"),
+                finish_reason="length",
+            )
+        ],
+    )
+
+    async def fake_chat(*_args):
+        return Response(content=response.model_dump_json(exclude_none=True))
+
+    from vllm_mlx.routes import chat as chat_routes
+
+    monkeypatch.setattr(chat_routes, "create_chat_completion", fake_chat)
+
+    with pytest.raises(AgentServerError, match="output limit"):
+        await generate_chat_turn(
+            "served",
+            [{"role": "user", "content": "x"}],
+            [],
+            AgentRunCreateRequest(goal="x"),
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("arguments", ["not json", "[]"])
 async def test_chat_driver_fails_closed_on_malformed_tool_arguments(
     monkeypatch, arguments

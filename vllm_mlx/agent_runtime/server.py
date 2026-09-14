@@ -481,7 +481,8 @@ async def generate_chat_turn(
     decoded = ChatCompletionResponse.model_validate_json(response.body)
     if len(decoded.choices) != 1:
         raise AgentServerError("chat generation returned an invalid choice count")
-    message = decoded.choices[0].message
+    choice = decoded.choices[0]
+    message = choice.message
     calls: list[AgentToolCall] = []
     for tool_call in message.tool_calls or []:
         try:
@@ -497,6 +498,11 @@ async def generate_chat_turn(
                 arguments=arguments,
             )
         )
+    allowed_finish_reasons = {"tool_calls", "stop"} if calls else {"stop"}
+    if choice.finish_reason not in allowed_finish_reasons:
+        if choice.finish_reason == "length":
+            raise AgentServerError("chat generation reached its output limit")
+        raise AgentServerError("chat generation returned an invalid finish reason")
     return AgentModelTurn(content=message.content or "", tool_calls=calls)
 
 
