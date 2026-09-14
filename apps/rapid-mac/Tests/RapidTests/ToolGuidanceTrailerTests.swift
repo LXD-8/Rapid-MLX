@@ -147,14 +147,73 @@ struct ToolGuidanceTrailerTests {
         #expect(!two.contains("\"content\":\"You have access to tools"),
                 "the guidance must not become a system/user row of its own")
 
-        // And the next turn's body starts with round two's, through the
-        // stamped user row and its tool rows, up to the newly appended
-        // assistant answer: the engine's exact/prefix lookup sees round two's
-        // stored prompt as a prefix of the next turn.
+        // And the next turn's body carries round two's complete message
+        // sequence as its prefix — the stamped user row, its tool rows, all
+        // of it — so the engine's exact/prefix lookup sees round two's stored
+        // prompt as a prefix of the next turn. Compared as decoded rows, not
+        // as a string cut inside a row.
         let threeData = try #require(await WireBodyCaptureProtocol.capture(request(Self.assemble(Self.nextTurn))))
-        let three = try #require(String(data: threeData, encoding: .utf8))
-        let toolRowCut = try #require(two.range(of: "temp_c")?.upperBound)
-        #expect(three.hasPrefix(String(two[..<toolRowCut])),
-                "the stamped user row and the tool rows behind it must serialize identically on the next turn")
+        let twoRows = try Self.wireMessages(twoData)
+        let threeRows = try Self.wireMessages(threeData)
+        #expect(threeRows.count == twoRows.count + 2)
+        #expect(Array(threeRows.prefix(twoRows.count)) == twoRows,
+                "every row of round two must serialize identically on the next turn")
+    }
+
+    /// The `messages` array of a wire body, each row re-serialized with sorted
+    /// keys so rows compare by content.
+    private static func wireMessages(_ body: Data) throws -> [String] {
+        let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let rows = try #require(object["messages"] as? [[String: Any]])
+        return try rows.map { row in
+            let data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
+            return try #require(String(data: data, encoding: .utf8))
+        }
+    }
+
+    @Test("Stamping is a rebuild: idempotent, and withdrawn everywhere when the tools are")
+    func stampIsRebuiltNotAppended() {
+        let once = ChatViewModel.stampingToolGuidance(on: Self.assemble(Self.nextTurn), toolsAdvertised: true)
+        let twice = ChatViewModel.stampingToolGuidance(on: once, toolsAdvertised: true)
+        #expect(twice == once)
+        let stampedRow = try? #require(once.first { $0.wireSuffix?.contains(ChatViewModel.toolGuidance) == true })
+        #expect(stampedRow?.wireSuffix?.components(separatedBy: ChatViewModel.toolGuidance).count == 2,
+                "exactly one copy of the guidance")
+
+        // A history that already carries the guidance (the pre-trim pass) and
+        // then loses its tools (final synthesis round, tool toggled off) must
+        // not keep a row asserting tool access.
+        let withdrawn = ChatViewModel.stampingToolGuidance(on: once, toolsAdvertised: false)
+        #expect(!withdrawn.contains { $0.wireSuffix?.contains(ChatViewModel.toolGuidance) == true })
+        let pristine = Self.assemble(Self.nextTurn, toolsAdvertised: false)
+        #expect(withdrawn.map(\.role) == pristine.map(\.role))
+        #expect(withdrawn.map(\.modelContent) == pristine.map(\.modelContent),
+                "withdrawing the guidance restores every row's wire bytes")
+        // The clock trailer the guidance was joined behind survives intact.
+        #expect(withdrawn[3].wireSuffix?.hasPrefix("[MESSAGE SENT]") == true)
+        #expect(withdrawn[3].wireSuffix?.hasSuffix("\n\n") == false)
+    }
+
+    @Test("The guidance counts toward the context-window trim budget")
+    @MainActor
+    func guidanceIsInsideTheTrimBudget() {
+        // Same conversation, stamped and unstamped. A budget that fits the
+        // unstamped body exactly must NOT fit the stamped one: the guidance
+        // rows are real tokens on the wire and the trim has to see them.
+        let bare = Self.assemble(Self.nextTurn, toolsAdvertised: false)
+        let stamped = Self.assemble(Self.nextTurn)
+        #expect(stamped.contains { $0.wireSuffix?.contains(ChatViewModel.toolGuidance) == true })
+        // Same accounting as the trim: prose plus tool-call arguments.
+        let cost: (ChatMessage) -> Int = { row in
+            let toolArgs = (row.toolCalls ?? []).map(\.function.arguments).joined()
+            return max(1, TokenEstimate.tokens(in: row.modelContent)
+                + (toolArgs.isEmpty ? 0 : TokenEstimate.tokens(in: toolArgs)))
+        }
+        let bareTokens = bare.reduce(0) { $0 + cost($1) }
+        let window = Int((Double(bareTokens) / 0.75).rounded(.up)) + 2
+        #expect(ChatViewModel.trimMessagesForContextWindow(bare, contextWindow: window).count == bare.count)
+        let trimmed = ChatViewModel.trimMessagesForContextWindow(stamped, contextWindow: window)
+        #expect(trimmed.count < stamped.count,
+                "a window sized for the prose alone must trim once the guidance rides the rows")
     }
 }

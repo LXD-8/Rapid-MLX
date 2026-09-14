@@ -2555,6 +2555,14 @@ final class ChatViewModel {
                 global: globalInstruction,
                 conversation: conversationInstruction
             )
+            // First of the two guidance passes: stamped BEFORE the trim so
+            // the guidance rows count toward the budget the trim works to.
+            // The clock trailer below rewrites every user row's trailer, and
+            // the second pass re-stamps the trimmed history behind it.
+            history = ChatViewModel.stampingToolGuidance(
+                on: history,
+                toolsAdvertised: !definitions.isEmpty
+            )
             // v0.5.11 / issue #363: silent context-window trim against the
             // engine-reported window (captured on the last profile fetch),
             // falling back to the per-family heuristic in ``ModelInfoCatalog``.
@@ -2593,12 +2601,11 @@ final class ChatViewModel {
                 on: history,
                 answeringAt: requestInstant
             )
-            // Ambient anti-confabulation guidance for every user row whose
-            // turn carries a tool result. Decided on the TRIMMED history so a
-            // trim that dropped the evidence drops the instruction with it
-            // (#1549), and stamped on user rows rather than the system row so
-            // the prompt stays append-only across the tool round and every
-            // turn after it — see ``stampingToolGuidance``.
+            // Second guidance pass, on the TRIMMED history and behind the
+            // clock trailer: a trim that dropped the evidence drops the
+            // instruction with it (#1549). Stamped on user rows rather than
+            // the system row so the prompt stays append-only across the tool
+            // round and every turn after it — see ``stampingToolGuidance``.
             history = ChatViewModel.stampingToolGuidance(
                 on: history,
                 toolsAdvertised: !definitions.isEmpty
@@ -3005,29 +3012,47 @@ final class ChatViewModel {
     /// have served it was already evicted by the tool loop's own requests.
     ///
     /// Same gate as before (#1549): tools must be advertised, and a row is
-    /// only stamped when its own turn holds a tool result. The caller passes
-    /// the trimmed history, so evidence that did not survive the trim takes
-    /// the instruction with it. Applied after ``stampingClockContext``, so
-    /// the guidance is joined behind the clock trailer.
+    /// only stamped when its own turn holds a tool result. The stamp is
+    /// REBUILT, not appended: any guidance already in a row's trailer is
+    /// removed first, so the function is idempotent, and a row keeps the
+    /// guidance only while the gate still holds for it — when the tools are
+    /// withdrawn (the final synthesis round, a tool toggled off) the text
+    /// claiming tool access leaves every row, not just the newest one.
+    ///
+    /// Called twice per round: once BEFORE ``trimMessagesForContextWindow``
+    /// so the ~400 tokens per stamped row count toward the context budget,
+    /// and once after the clock trailer on the trimmed history, so evidence
+    /// the trim dropped takes its instruction with it. The second pass can
+    /// only remove guidance the first pass added, so the trimmed request
+    /// never exceeds the budget the trim worked to.
     nonisolated static func stampingToolGuidance(
         on messages: [ChatMessage],
         toolsAdvertised: Bool
     ) -> [ChatMessage] {
-        guard toolsAdvertised else { return messages }
         var result = messages
         let userIndices = result.indices.filter { result[$0].role == .user }
         for (n, index) in userIndices.enumerated() {
+            let pristine = strippingToolGuidance(from: result[index].wireSuffix)
             let turnEnd = n + 1 < userIndices.count ? userIndices[n + 1] : result.endIndex
-            guard result[result.index(after: index)..<turnEnd].contains(where: { $0.role == .tool })
-            else { continue }
-            let existing = result[index].wireSuffix.flatMap {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
-            }
-            result[index].wireSuffix = [existing, toolGuidance]
-                .compactMap { $0 }
-                .joined(separator: "\n\n")
+            let earned = toolsAdvertised
+                && result[result.index(after: index)..<turnEnd].contains(where: { $0.role == .tool })
+            result[index].wireSuffix = earned
+                ? [pristine, toolGuidance].compactMap { $0 }.joined(separator: "\n\n")
+                : pristine
         }
         return result
+    }
+
+    /// The trailer without the guidance component ``stampingToolGuidance``
+    /// adds (and without the separator that joined it), or nil when nothing
+    /// else was there.
+    nonisolated static func strippingToolGuidance(from suffix: String?) -> String? {
+        guard var remaining = suffix else { return nil }
+        if let range = remaining.range(of: toolGuidance) {
+            remaining.removeSubrange(range)
+            if remaining.hasSuffix("\n\n") { remaining.removeLast(2) }
+        }
+        return remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : remaining
     }
 
     /// Merge current-date context, pre-existing, global, and conversation
