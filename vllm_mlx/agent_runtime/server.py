@@ -45,32 +45,33 @@ Rules:
 - Final answers must state the result and evidence; citations must be exact source URLs.
 """
 _MAX_TOOL_RESULT_CHARS = 240_000
-_SENSITIVE_ARGUMENT_KEY = re.compile(
-    r"(?:^|_)(?:api_?key|authorization|cookie|credential|password|private_?key|secret|token)(?:$|_)",
-    re.IGNORECASE,
+_SENSITIVE_ARGUMENT_MARKERS = (
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "passwd",
+    "privatekey",
+    "secret",
+    "sessionid",
+    "token",
 )
 
 
-def _approval_argument_summary(value: Any, *, key: str = "", depth: int = 0) -> Any:
-    """Build a bounded operator preview without exposing credential fields."""
+def _approval_argument_summary(value: Any, *, key: str = "") -> Any:
+    """Build a complete operator preview without exposing credential fields."""
 
-    if key and _SENSITIVE_ARGUMENT_KEY.search(key):
+    normalized_key = re.sub(r"[^a-z0-9]", "", key.casefold())
+    if key and any(marker in normalized_key for marker in _SENSITIVE_ARGUMENT_MARKERS):
         return "[redacted]"
-    if depth >= 6:
-        return "[nested value omitted]"
     if isinstance(value, dict):
         return {
-            str(item_key): _approval_argument_summary(
-                item_value, key=str(item_key), depth=depth + 1
-            )
-            for item_key, item_value in list(value.items())[:64]
+            str(item_key): _approval_argument_summary(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
         }
     if isinstance(value, list):
-        return [
-            _approval_argument_summary(item, depth=depth + 1) for item in value[:64]
-        ]
-    if isinstance(value, str) and len(value) > 512:
-        return value[:512] + f"… [truncated; {len(value)} chars total]"
+        return [_approval_argument_summary(item) for item in value]
     return value
 
 
@@ -582,6 +583,9 @@ class AgentServerService:
             model_config=profile_model_config,
             tool_call_parser=profile_tool_call_parser,
         )
+        effective_request = request.model_copy(
+            update={"max_tokens": min(request.max_tokens, profile.max_output_tokens)}
+        )
         snapshot = getattr(self._registry, "snapshot", None)
         run_registry = snapshot() if callable(snapshot) else self._registry
         tools = self._select_tools(request.tool_names, profile, run_registry)
@@ -592,7 +596,7 @@ class AgentServerService:
         entry = _ServerRun(
             run=run,
             request_model=public_model,
-            settings=request,
+            settings=effective_request,
             tools=tuple(tools),
             registry=run_registry,
             model_generation=model_generation,

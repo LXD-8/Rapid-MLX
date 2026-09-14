@@ -674,7 +674,12 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
             "recipient": "ops@example.com",
             "amount": 42,
             "api_token": "secret-token",
-            "nested": {"password": "secret-password"},
+            "apiKey": "secret-api-key",
+            "nested": {
+                "password": "secret-password",
+                "accessToken": "secret-access-token",
+                "clientSecret": "secret-client",
+            },
         }
     )
 
@@ -682,8 +687,27 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
         "recipient": "ops@example.com",
         "amount": 42,
         "api_token": "[redacted]",
-        "nested": {"password": "[redacted]"},
+        "apiKey": "[redacted]",
+        "nested": {
+            "password": "[redacted]",
+            "accessToken": "[redacted]",
+            "clientSecret": "[redacted]",
+        },
     }
+
+
+@pytest.mark.asyncio
+async def test_minicpm_profile_enforces_qualified_output_budget():
+    driver = ScriptedDriver(AgentModelTurn(content="Done."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="x", max_tokens=4096),
+        model="minicpm5-2b-4bit",
+    )
+    await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    assert driver.requests[0][3].max_tokens == 900
 
 
 def test_store_configuration_must_be_bounded():

@@ -12,6 +12,7 @@ MINICPM5_2B_PROFILE = AgentProfile(
     max_visible_tools=6,
     max_tool_rounds=8,
     repeated_call_limit=2,
+    max_output_tokens=900,
 )
 
 DEFAULT_PROFILE = AgentProfile(

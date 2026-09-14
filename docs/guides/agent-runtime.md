@@ -54,8 +54,8 @@ same name. The old connection may instead report unavailable; create a new run
 to use the reloaded registry.
 
 While a run is `awaiting_approval`, its authenticated run view includes a
-Rapid-generated `approval_summary`. It preserves ordinary decision fields such
-as recipient, path, command, and amount, bounds long/nested values, and redacts
+Rapid-generated `approval_summary`. It completely preserves ordinary decision
+fields such as recipient, path, command, and amount while recursively redacting
 credential-shaped keys. Neither that summary nor the original arguments enter
 the event stream.
 
@@ -165,7 +165,8 @@ The MiniCPM5-2B profile is the measured low-memory path:
 - at most 8 tool rounds, followed by one tools-disabled synthesis turn;
 - at most 2 identical calls before loop blocking;
 - one tool call per model turn;
-- 900 output tokens, temperature 0.7, top-p 0.95, thinking disabled;
+- a hard 900-token output ceiling (larger request values are clamped),
+  temperature 0.7, top-p 0.95, thinking disabled;
 - 300-second model-turn timeout.
 
 The sampling and timeout fields can be overridden on run creation. Safety and

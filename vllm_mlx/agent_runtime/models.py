@@ -79,6 +79,7 @@ class AgentProfile(_WireModel):
     max_visible_tools: StrictInt = Field(ge=0, le=64)
     max_tool_rounds: StrictInt = Field(ge=0, le=128)
     repeated_call_limit: StrictInt = Field(ge=0, le=16)
+    max_output_tokens: StrictInt = Field(default=4096, ge=64, le=4096)
     attach_ledger_to_tool_results: StrictBool = True
 
 
