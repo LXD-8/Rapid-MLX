@@ -173,7 +173,7 @@ class AgentToolResult(_WireModel):
     call_id: StrictStr = Field(min_length=1, max_length=256)
     content: StrictStr = Field(max_length=262_144)
     is_error: StrictBool = False
-    executed: StrictBool = True
+    executed: StrictBool | None = True
     safe_summary: StrictStr | None = Field(default=None, max_length=1024)
 
 

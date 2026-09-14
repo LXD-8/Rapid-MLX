@@ -45,25 +45,14 @@ Rules:
 - Final answers must state the result and evidence; citations must be exact source URLs.
 """
 _MAX_TOOL_RESULT_CHARS = 240_000
-_SENSITIVE_ARGUMENT_MARKERS = (
-    "apikey",
-    "authorization",
-    "cookie",
-    "credential",
-    "password",
-    "passwd",
-    "privatekey",
-    "secret",
-    "sessionid",
-    "token",
-)
 
 
 def _approval_argument_summary(value: Any, *, key: str = "") -> Any:
     """Build a complete operator preview without exposing credential fields."""
 
-    normalized_key = re.sub(r"[^a-z0-9]", "", key.casefold())
-    if key and any(marker in normalized_key for marker in _SENSITIVE_ARGUMENT_MARKERS):
+    from ..mcp.security import is_sensitive_argument_key
+
+    if key and is_sensitive_argument_key(key):
         return "[redacted]"
     if isinstance(value, dict):
         return {
@@ -902,15 +891,15 @@ class AgentServerService:
                     ),
                 )
             except Exception:
-                # Untyped registry failures are fail-closed as pre-dispatch.
-                # A custom registry that crossed its dispatch boundary must
-                # raise AgentToolExecutionError(executed=True).
+                # An untyped third-party registry exception does not reveal
+                # whether dispatch occurred. Preserve that uncertainty rather
+                # than encourage an unsafe retry with a false boolean.
                 result = AgentToolResult(
                     call_id=call.id,
-                    content="Tool execution failed before dispatch.",
+                    content="Tool execution outcome is unknown; do not retry automatically.",
                     is_error=True,
-                    executed=False,
-                    safe_summary="Tool execution failed; no action was executed.",
+                    executed=None,
+                    safe_summary="Tool execution outcome is unknown; do not retry automatically.",
                 )
             self._runtime.accept_tool_result(entry.run, result)
             self._append_tool_observation(entry, result)

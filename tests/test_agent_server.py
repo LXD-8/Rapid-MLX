@@ -586,7 +586,7 @@ async def test_cancel_after_dispatched_tool_exception_records_outcome_then_cance
 
 
 @pytest.mark.asyncio
-async def test_untyped_registry_failure_is_fail_closed_as_pre_dispatch():
+async def test_untyped_registry_failure_preserves_unknown_execution_state():
     class FailingRegistry(FakeRegistry):
         async def execute(self, _call):
             raise RuntimeError("setup failed")
@@ -614,7 +614,8 @@ async def test_untyped_registry_failure_is_fail_closed_as_pre_dispatch():
     ]
 
     assert len(completed) == 1
-    assert completed[0].data["result"]["executed"] is False
+    assert completed[0].data["result"]["executed"] is None
+    assert "do not retry automatically" in completed[0].data["result"]["safe_summary"]
 
 
 def test_tool_selection_is_exact_bounded_and_read_first_by_default():
@@ -675,6 +676,10 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
             "amount": 42,
             "api_token": "secret-token",
             "apiKey": "secret-api-key",
+            "auth": "secret-auth",
+            "bearer": "secret-bearer",
+            "jwt": "secret-jwt",
+            "access_key_id": "secret-access-key",
             "nested": {
                 "password": "secret-password",
                 "accessToken": "secret-access-token",
@@ -688,6 +693,10 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
         "amount": 42,
         "api_token": "[redacted]",
         "apiKey": "[redacted]",
+        "auth": "[redacted]",
+        "bearer": "[redacted]",
+        "jwt": "[redacted]",
+        "access_key_id": "[redacted]",
         "nested": {
             "password": "[redacted]",
             "accessToken": "[redacted]",

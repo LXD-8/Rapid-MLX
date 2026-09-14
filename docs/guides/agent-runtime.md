@@ -141,6 +141,11 @@ Server-executed runs reject client results. Client-authored result content is
 transient; clients cannot author the event `safe_summary` field. This prevents
 secrets or tool output from being copied into the event stream.
 
+Tool completion events use `executed:true` when dispatch occurred,
+`executed:false` for a known pre-dispatch rejection, and `executed:null` when a
+third-party registry failure leaves the outcome uncertain. Treat `null` as
+potentially executed and never retry it automatically.
+
 ## Cancel a run
 
 ```bash
