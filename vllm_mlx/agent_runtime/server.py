@@ -450,30 +450,32 @@ async def generate_chat_turn(
 
     from ..routes.chat import create_chat_completion
 
-    request = ChatCompletionRequest(
-        model=model,
-        messages=messages,
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                },
-            }
-            for tool in tools
-        ]
-        or None,
-        tool_choice="auto" if tools else None,
-        parallel_tool_calls=False,
-        max_tokens=settings.max_tokens,
-        temperature=settings.temperature,
-        top_p=settings.top_p,
-        enable_thinking=settings.enable_thinking,
-        seed=settings.seed,
-        timeout=settings.timeout,
-        stream=False,
+    request = ChatCompletionRequest.model_validate(
+        {
+            "model": model,
+            "messages": messages,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in tools
+            ]
+            or None,
+            "tool_choice": "auto" if tools else None,
+            "parallel_tool_calls": False,
+            "max_tokens": settings.max_tokens,
+            "temperature": settings.temperature,
+            "top_p": settings.top_p,
+            "enable_thinking": settings.enable_thinking,
+            "seed": settings.seed,
+            "timeout": settings.timeout,
+            "stream": False,
+        }
     )
     response = await create_chat_completion(request, _InternalRequest())  # type: ignore[arg-type]
     if response.status_code != 200 or not getattr(response, "body", None):

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from threading import RLock
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -68,7 +69,7 @@ async def _entry_model_config(entry) -> dict | None:
 
     cached = getattr(entry, "_agent_profile_model_config", _METADATA_UNSET)
     if cached is not _METADATA_UNSET:
-        return cached
+        return cast(dict | None, cached)
     metadata = await asyncio.to_thread(read_model_metadata, entry.model_path)
     config = metadata.config if metadata is not None else None
     entry._agent_profile_model_config = config
