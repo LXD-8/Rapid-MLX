@@ -277,6 +277,14 @@ class MCPToolRegistry:
                 safe_summary="MCP registry was unavailable; no action was executed.",
             )
         if server_name is None:
+            self._record_execution(
+                executor.sandbox,
+                bare_name,
+                fallback_server,
+                call.arguments,
+                success=False,
+                error_message="MCP tool unavailable",
+            )
             return AgentToolResult(
                 call_id=call.id,
                 content="The selected MCP tool is no longer available.",
@@ -329,6 +337,22 @@ class MCPToolRegistry:
                 is_error=True,
                 executed=False,
                 safe_summary="Server policy blocked the tool call.",
+            )
+        except Exception:
+            self._record_execution(
+                executor.sandbox,
+                bare_name,
+                server_name,
+                call.arguments,
+                success=False,
+                error_message="MCP sandbox unavailable",
+            )
+            return AgentToolResult(
+                call_id=call.id,
+                content="The server could not validate this tool call.",
+                is_error=True,
+                executed=False,
+                safe_summary="Tool validation failed; no action was executed.",
             )
         started = time.time()
         try:

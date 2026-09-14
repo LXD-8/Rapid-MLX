@@ -50,7 +50,7 @@ Create `mcp.json`:
 
 When the [Rapid Agent Runtime](agent-runtime.md) may execute MCP tools, declare
 only exact namespaced tools known to be side-effect-free in
-`agent.read_only_tools`. Every undeclared MCP tool pauses for per-call approval;
+that server's `agent_read_only_tools`. Every undeclared MCP tool pauses for per-call approval;
 Rapid deliberately does not infer safety from a name such as `get_*` or
 `read_*`.
 

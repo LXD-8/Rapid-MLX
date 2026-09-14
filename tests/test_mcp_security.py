@@ -911,7 +911,15 @@ class TestAgentReadOnlyToolsConfig:
         from vllm_mlx.mcp.config import validate_config
 
         cfg = validate_config(
-            {"servers": {}, "agent": {"read_only_tools": ["files__read_file"]}}
+            {
+                "servers": {
+                    "files": {
+                        "command": "npx",
+                        "args": ["safe-package"],
+                        "agent_read_only_tools": ["files__read_file"],
+                    }
+                }
+            }
         )
 
         assert cfg.agent_read_only_tools == ["files__read_file"]
@@ -921,7 +929,17 @@ class TestAgentReadOnlyToolsConfig:
         from vllm_mlx.mcp.config import validate_config
 
         with pytest.raises(ValueError, match="agent_read_only_tools"):
-            validate_config({"servers": {}, "agent": {"read_only_tools": value}})
+            validate_config(
+                {
+                    "servers": {
+                        "files": {
+                            "command": "npx",
+                            "args": ["safe-package"],
+                            "agent_read_only_tools": value,
+                        }
+                    }
+                }
+            )
 
     @pytest.mark.parametrize(
         "value", ["prefix-files__read_file-suffix", ["read_file"], [1]]
@@ -930,7 +948,17 @@ class TestAgentReadOnlyToolsConfig:
         from vllm_mlx.mcp.types import MCPConfig
 
         with pytest.raises(ValueError, match="agent_read_only_tools"):
-            MCPConfig.from_dict({"servers": {}, "agent": {"read_only_tools": value}})
+            MCPConfig.from_dict(
+                {
+                    "servers": {
+                        "files": {
+                            "command": "npx",
+                            "args": ["safe-package"],
+                            "agent_read_only_tools": value,
+                        }
+                    }
+                }
+            )
 
     def test_legacy_server_named_agent_read_only_tools_is_not_reserved(self):
         from vllm_mlx.mcp.config import validate_config
@@ -948,8 +976,25 @@ class TestAgentReadOnlyToolsConfig:
 
         assert "agent_read_only_tools" in cfg.servers
 
-    def test_agent_namespace_rejects_unknown_settings(self):
+    def test_read_only_declaration_must_match_owning_server_namespace(self):
         from vllm_mlx.mcp.config import validate_config
 
-        with pytest.raises(ValueError, match="unknown MCP agent setting"):
-            validate_config({"servers": {}, "agent": {"readOnlyTools": []}})
+        with pytest.raises(ValueError, match="files__"):
+            validate_config(
+                {
+                    "servers": {
+                        "files": {
+                            "command": "npx",
+                            "args": ["safe-package"],
+                            "agent_read_only_tools": ["other__read_file"],
+                        }
+                    }
+                }
+            )
+
+    def test_legacy_top_level_server_named_agent_remains_a_server(self):
+        from vllm_mlx.mcp.config import validate_config
+
+        cfg = validate_config({"agent": {"command": "npx", "args": ["safe-package"]}})
+
+        assert "agent" in cfg.servers

@@ -957,8 +957,15 @@ async def test_mcp_unavailable_and_disappeared_calls_are_unexecuted():
     cfg.mcp_manager = SimpleNamespace(
         resolve_tool_target=lambda _name: (None, "read_file")
     )
-    cfg.mcp_executor = SimpleNamespace(sandbox=object())
+    disappeared_audit = []
+
+    class DisappearedSandbox:
+        def record_execution(self, *args, **kwargs):
+            disappeared_audit.append((args, kwargs))
+
+    cfg.mcp_executor = SimpleNamespace(sandbox=DisappearedSandbox())
     assert (await MCPToolRegistry().execute(call)).executed is False
+    assert disappeared_audit[0][1]["error_message"] == "MCP tool unavailable"
 
     audited = []
 
@@ -1007,6 +1014,45 @@ async def test_mcp_registry_lookup_failure_is_audited_and_unexecuted():
     assert "private disconnect detail" not in result.content
     assert audited[0][0][:2] == ("read_file", "files")
     assert audited[0][1]["error_message"] == "MCP registry unavailable"
+    reset_config()
+
+
+@pytest.mark.asyncio
+async def test_mcp_sandbox_internal_failure_is_unexecuted_and_audited():
+    from types import SimpleNamespace
+
+    from vllm_mlx.config import reset_config
+
+    audited = []
+    dispatched = []
+
+    class Sandbox:
+        def validate_tool_execution(self, *_args):
+            raise RuntimeError("private sandbox detail")
+
+        def record_execution(self, *args, **kwargs):
+            audited.append((args, kwargs))
+
+    class Manager:
+        def resolve_tool_target(self, _name):
+            return "files", "read_file"
+
+        async def execute_tool(self, *_args):
+            dispatched.append(True)
+
+    cfg = reset_config()
+    cfg.mcp_manager = Manager()
+    cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
+
+    result = await MCPToolRegistry().execute(
+        AgentToolCall(id="call", name="files__read_file", arguments={})
+    )
+
+    assert result.executed is False
+    assert result.is_error is True
+    assert "private sandbox detail" not in result.content
+    assert dispatched == []
+    assert audited[0][1]["error_message"] == "MCP sandbox unavailable"
     reset_config()
 
 

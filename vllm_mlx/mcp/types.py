@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # Recognized non-server top-level config keys. A config with only these (and
 # no server map) is an intentional globals-only config, not a mistyped
 # server-key footgun — see select_server_map.
-_KNOWN_SETTING_KEYS = frozenset({"default_timeout", "allowed_high_risk_tools", "agent"})
+_KNOWN_SETTING_KEYS = frozenset({"default_timeout", "allowed_high_risk_tools"})
 
 
 def validate_agent_read_only_tools(value: Any) -> list[str]:
@@ -26,18 +26,6 @@ def validate_agent_read_only_tools(value: Any) -> list[str]:
             "'agent_read_only_tools' must be a list of namespaced tool strings"
         )
     return list(value)
-
-
-def select_agent_read_only_tools(data: dict[str, Any]) -> list[str]:
-    """Read agent policy from its unambiguous structured namespace."""
-
-    agent = data.get("agent", {})
-    if not isinstance(agent, dict):
-        raise ValueError("'agent' must be a dictionary")
-    unexpected = set(agent) - {"read_only_tools"}
-    if unexpected:
-        raise ValueError(f"unknown MCP agent setting(s): {sorted(unexpected)}")
-    return validate_agent_read_only_tools(agent.get("read_only_tools", []))
 
 
 def select_server_map(data: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +55,13 @@ def select_server_map(data: dict[str, Any]) -> dict[str, Any]:
             "standard 'mcpServers' key and ignoring 'servers'."
         )
     elif not has_standard and not has_legacy:
+        # Preserve the historical single-server form when that server is
+        # literally named "agent". No new top-level setting may reserve it.
+        legacy_agent = data.get("agent")
+        if isinstance(legacy_agent, dict) and any(
+            key in legacy_agent for key in ("command", "url", "transport")
+        ):
+            return {"agent": legacy_agent}
         # Warn only when there's an unrecognized top-level key — a likely
         # mistyped server map (e.g. "mcp_servers", "Servers") that would
         # otherwise silently load nothing. A config with only recognized
@@ -119,11 +114,28 @@ class MCPServerConfig:
 
     # Security options
     skip_security_validation: bool = False  # WARNING: Only for development!
+    # Agent policy belongs to the server it describes, avoiding a new
+    # top-level config key that could collide with a legacy server name.
+    agent_read_only_tools: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         """Validate configuration."""
         if isinstance(self.transport, str):
             self.transport = MCPTransport(self.transport)
+
+        self.agent_read_only_tools = validate_agent_read_only_tools(
+            self.agent_read_only_tools
+        )
+        wrong_server = [
+            tool
+            for tool in self.agent_read_only_tools
+            if not tool.startswith(f"{self.name}__")
+        ]
+        if wrong_server:
+            raise ValueError(
+                f"MCP server '{self.name}': agent_read_only_tools must use "
+                f"the '{self.name}__' namespace"
+            )
 
         if self.transport == MCPTransport.STDIO:
             if not self.command:
@@ -217,11 +229,15 @@ class MCPConfig:
             server_data["name"] = name
             servers[name] = MCPServerConfig(**server_data)
 
+        agent_read_only_tools = [
+            tool for server in servers.values() for tool in server.agent_read_only_tools
+        ]
+
         return cls(
             servers=servers,
             default_timeout=data.get("default_timeout", 30.0),
             allowed_high_risk_tools=data.get("allowed_high_risk_tools", []),
-            agent_read_only_tools=select_agent_read_only_tools(data),
+            agent_read_only_tools=agent_read_only_tools,
         )
 
 

@@ -13,7 +13,6 @@ from .types import (
     MCPConfig,
     MCPRejectedServer,
     MCPServerConfig,
-    select_agent_read_only_tools,
     select_server_map,
 )
 
@@ -214,7 +213,9 @@ def validate_config(data: dict[str, Any], tolerant: bool = False) -> MCPConfig:
     ):
         raise ValueError("'allowed_high_risk_tools' must be a list of strings")
 
-    agent_read_only_tools = select_agent_read_only_tools(data)
+    agent_read_only_tools = [
+        tool for server in servers.values() for tool in server.agent_read_only_tools
+    ]
 
     return MCPConfig(
         servers=servers,
