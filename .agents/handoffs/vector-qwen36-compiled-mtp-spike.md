@@ -37,6 +37,14 @@ to Atlas, Pixel, Harbor, and Echo through Orca run `run_8787255f6b9c`. All four
 requests returned `Invalid input`. This handoff preserves the complete FYI
 until the messaging channel accepts recipients again.
 
+## Owner review preference
+
+The human owner explicitly requires Vector to run its own multi-round
+adversarial review and not wait for the Spark host. Review/fix rounds must
+converge within the declared intention: correct blocking defects and tighten
+the change, but do not expand PR scope merely because an unrelated improvement
+is discovered.
+
 ## Storage constraint
 
 The Hugging Face volume had about 16 GiB free at spike start. The target is an
