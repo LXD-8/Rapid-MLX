@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from threading import RLock
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -30,20 +31,48 @@ router = APIRouter(
 )
 
 _service: AgentServerService | None = None
+_service_lock = RLock()
+_service_shutting_down = False
+_METADATA_UNSET = object()
 
 
 def get_agent_service() -> AgentServerService:
     global _service
-    if _service is None:
-        _service = AgentServerService()
-    return _service
+    with _service_lock:
+        if _service_shutting_down:
+            raise AgentRunCapacityError("agent runtime is shutting down")
+        if _service is None:
+            _service = AgentServerService()
+        return _service
 
 
 async def close_agent_service() -> None:
-    global _service
-    service, _service = _service, None
-    if service is not None:
-        await service.close()
+    global _service, _service_shutting_down
+    with _service_lock:
+        if _service_shutting_down:
+            return
+        _service_shutting_down = True
+        service = _service
+    try:
+        if service is not None:
+            await service.close()
+    finally:
+        with _service_lock:
+            if _service is service:
+                _service = None
+            _service_shutting_down = False
+
+
+async def _entry_model_config(entry) -> dict | None:
+    """Read immutable metadata once for this concrete registry generation."""
+
+    cached = getattr(entry, "_agent_profile_model_config", _METADATA_UNSET)
+    if cached is not _METADATA_UNSET:
+        return cached
+    metadata = await asyncio.to_thread(read_model_metadata, entry.model_path)
+    config = metadata.config if metadata is not None else None
+    entry._agent_profile_model_config = config
+    return config
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -77,8 +106,7 @@ async def create_agent_run(request: AgentRunCreateRequest) -> AgentRunView:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         profile_model = entry.model_path or entry.model_name
-        metadata = await asyncio.to_thread(read_model_metadata, entry.model_path)
-        profile_model_config = metadata.config if metadata is not None else None
+        profile_model_config = await _entry_model_config(entry)
         profile_tool_call_parser = entry.tool_call_parser
         model_generation = entry
     elif cfg.model_path:

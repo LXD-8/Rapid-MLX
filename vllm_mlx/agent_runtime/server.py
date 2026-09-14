@@ -619,7 +619,9 @@ class AgentServerService:
                     raise AgentRunCapacityError("all agent run slots are active")
                 self._runs.pop(terminal.run.id, None)
             self._runs[run.id] = entry
-        self._schedule(entry)
+            # Atomic with respect to close(), which takes the same lock before
+            # marking entries cancelled.
+            self._schedule(entry)
         await asyncio.sleep(0)
         return self._view(entry)
 

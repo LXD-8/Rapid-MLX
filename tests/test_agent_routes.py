@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import json
 
 import pytest
@@ -478,6 +479,31 @@ async def test_agent_route_singleton_closes_and_resets(monkeypatch):
     await agent_routes.close_agent_service()
 
     assert closed == [True]
+    assert agent_routes._service is None
+
+
+@pytest.mark.asyncio
+async def test_agent_route_singleton_rejects_replacement_during_shutdown(monkeypatch):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Service:
+        async def close(self):
+            entered.set()
+            await release.wait()
+
+    original = Service()
+    monkeypatch.setattr(agent_routes, "_service", original)
+    monkeypatch.setattr(agent_routes, "_service_shutting_down", False)
+    closing = asyncio.create_task(agent_routes.close_agent_service())
+    await entered.wait()
+
+    with pytest.raises(AgentRunCapacityError, match="shutting down"):
+        agent_routes.get_agent_service()
+    assert agent_routes._service is original
+
+    release.set()
+    await closing
     assert agent_routes._service is None
 
 
