@@ -119,8 +119,12 @@ class TestRequest:
 
 def test_batched_engine_routes_cache_operations_to_active_backend():
     from vllm_mlx.engine.batched import BatchedEngine
+    from vllm_mlx.prompt_host_cache import PromptHostCache
 
     engine = BatchedEngine.__new__(BatchedEngine)
+    engine._prompt_host_cache = PromptHostCache(enabled=True)
+    fingerprint = engine._prompt_host_cache.fingerprint({"prompt": "retained"})
+    assert engine._prompt_host_cache.put_render(fingerprint, "retained")
     mllm = MagicMock()
     mllm.get_cache_stats.return_value = {"hits": 2}
     mllm.clear_prefix_cache.return_value = True
@@ -129,6 +133,8 @@ def test_batched_engine_routes_cache_operations_to_active_backend():
 
     assert engine.get_cache_stats() == {"hits": 2}
     assert engine.clear_prefix_cache(reset_stats=False) is True
+    assert engine._prompt_host_cache.stats()["entries"] == 0
+    assert engine._prompt_host_cache.stats()["invalidations"] == 1
     mllm.clear_prefix_cache.assert_called_once_with(reset_stats=False)
 
     text_engine = MagicMock()
