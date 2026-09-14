@@ -60,7 +60,9 @@ forcing macOS-only tools into Python.
 3. Tools not advertised for that exact turn fail closed.
    Registry adapters must classify every tool explicitly; there is no
    permissive default risk. Calls are validated against the exact JSON Schema
-   snapshot shown to the model before any executable payload is released.
+   snapshot shown to the model before any executable payload is released. P0
+   accepts inline schemas only; references and resolver/network behavior are out
+   of scope.
 4. External side effects pause for an explicit approval result tied to the
    exact pending call ID; their raw executable call is released only after
    `approved=True`. A call ID may appear only once in a run. Blocked/denied

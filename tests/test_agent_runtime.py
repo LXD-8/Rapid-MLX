@@ -84,6 +84,30 @@ def test_tool_parameters_must_be_a_valid_json_schema():
         ToolSpec(name="broken", risk=ToolRisk.READ_ONLY, parameters={"type": 7})
 
 
+def test_tool_parameters_reject_references_in_p0():
+    with pytest.raises(ValidationError, match="inline JSON Schema"):
+        ToolSpec(
+            name="referenced",
+            risk=ToolRisk.READ_ONLY,
+            parameters={"$ref": "#/$defs/missing"},
+        )
+
+
+def test_non_json_tool_parameters_raise_a_validation_error():
+    with pytest.raises(ValidationError, match="JSON serializable"):
+        ToolSpec(name="broken", risk=ToolRisk.READ_ONLY, parameters={"x": object()})
+
+
+def test_non_json_event_data_raise_a_validation_error():
+    with pytest.raises(ValidationError, match="JSON serializable"):
+        AgentEvent(
+            sequence=1,
+            type="run.created",
+            created_at=1,
+            data={"x": object()},
+        )
+
+
 def test_successful_tool_round_has_stable_events_and_roundtrips():
     runtime = _runtime()
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read the report")

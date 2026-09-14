@@ -36,6 +36,16 @@ AgentEventType = Literal[
 ]
 
 
+def _contains_schema_reference(value: JsonValue) -> bool:
+    if isinstance(value, dict):
+        if any(key in value for key in ("$ref", "$dynamicRef", "$recursiveRef")):
+            return True
+        return any(_contains_schema_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_schema_reference(item) for item in value)
+    return False
+
+
 class _WireModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -91,6 +101,8 @@ class ToolSpec(_WireModel):
             raise ValueError("tool parameters must be valid JSON") from exc
         if not isinstance(decoded, dict):
             raise ValueError("tool parameters must be a JSON object")
+        if _contains_schema_reference(decoded):
+            raise ValueError("tool parameters must use an inline JSON Schema")
         try:
             validators.validator_for(decoded).check_schema(decoded)
         except Exception as exc:
@@ -116,13 +128,16 @@ class ToolSpec(_WireModel):
                 raise ValueError(
                     "tool spec must not contain both parameters and parameters_json"
                 )
-            normalized["parameters_json"] = json.dumps(
-                normalized.pop("parameters"),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
+            try:
+                normalized["parameters_json"] = json.dumps(
+                    normalized.pop("parameters"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("tool parameters must be JSON serializable") from exc
             return normalized
         return value
 
@@ -205,13 +220,16 @@ class AgentEvent(_WireModel):
             normalized = dict(value)
             if "payload_json" in normalized:
                 raise ValueError("event must not contain both data and payload_json")
-            normalized["payload_json"] = json.dumps(
-                normalized.pop("data"),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
+            try:
+                normalized["payload_json"] = json.dumps(
+                    normalized.pop("data"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("event data must be JSON serializable") from exc
             return normalized
         return value
 
