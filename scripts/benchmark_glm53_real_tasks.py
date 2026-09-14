@@ -409,9 +409,9 @@ def _post_task(
         "enable_thinking": True,
     }
     if use_thinking_budget:
-        payload[
-            "reasoning_max_tokens" if rapid_budget_field else "thinking_budget"
-        ] = task.thinking_budget
+        payload["reasoning_max_tokens" if rapid_budget_field else "thinking_budget"] = (
+            task.thinking_budget
+        )
     started = time.perf_counter()
     response = client.post(
         f"{base_url.rstrip('/')}/chat/completions",
