@@ -657,6 +657,49 @@ async def test_mcp_execution_preserves_sandbox_and_audit():
 
 
 @pytest.mark.asyncio
+async def test_mcp_audit_failure_never_rewrites_committed_tool_outcome(caplog):
+    from types import SimpleNamespace
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.mcp.types import MCPToolResult
+
+    class Sandbox:
+        def validate_tool_execution(self, *_args):
+            return None
+
+        def record_execution(self, *_args, **_kwargs):
+            raise OSError("audit sink unavailable")
+
+    class Manager:
+        def resolve_tool_target(self, _name):
+            return "files", "write_file"
+
+        async def execute_tool(self, _name, _arguments):
+            return MCPToolResult("files__write_file", "committed")
+
+    cfg = reset_config()
+    cfg.mcp_manager = Manager()
+    cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
+
+    result = await MCPToolRegistry().execute(
+        AgentToolCall(
+            id="side-effect",
+            name="files__write_file",
+            arguments={"path": "x"},
+        )
+    )
+
+    assert result.content == "committed"
+    assert result.executed is True
+    assert result.is_error is False
+    assert result.safe_summary == (
+        "Tool execution completed, but its MCP audit record could not be written."
+    )
+    assert "Failed to write MCP execution audit record" in caplog.text
+    reset_config()
+
+
+@pytest.mark.asyncio
 async def test_mcp_snapshot_never_executes_against_reloaded_registry():
     from types import SimpleNamespace
 

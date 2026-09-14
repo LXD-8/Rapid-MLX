@@ -189,6 +189,27 @@ class MCPToolRegistry:
         cfg = get_config()
         return cfg.mcp_manager, cfg.mcp_executor
 
+    @staticmethod
+    def _record_execution(sandbox: Any, *args: Any, **kwargs: Any) -> bool:
+        """Best-effort audit that can never rewrite the tool outcome.
+
+        In particular, an audit sink failure after a side effect has committed
+        must not turn a successful call into an apparent failure: that can
+        encourage an unsafe retry. The exception is logged without arguments,
+        which may contain sensitive tool payloads.
+        """
+
+        try:
+            sandbox.record_execution(*args, **kwargs)
+        except Exception:
+            logger.exception(
+                "Failed to write MCP execution audit record for %s on %s",
+                args[0] if args else "unknown tool",
+                args[1] if len(args) > 1 else "unknown server",
+            )
+            return False
+        return True
+
     def list_tools(self) -> Sequence[ToolSpec]:
         manager, _ = self._components()
         if manager is None:
@@ -246,7 +267,8 @@ class MCPToolRegistry:
         if callable(get_client):
             client = get_client(server_name)
             if client is None or not client.is_connected:
-                executor.sandbox.record_execution(
+                self._record_execution(
+                    executor.sandbox,
                     bare_name,
                     server_name,
                     call.arguments,
@@ -268,7 +290,8 @@ class MCPToolRegistry:
                 bare_name, server_name, call.arguments
             )
         except MCPSecurityError:
-            executor.sandbox.record_execution(
+            self._record_execution(
+                executor.sandbox,
                 bare_name,
                 server_name,
                 call.arguments,
@@ -286,7 +309,8 @@ class MCPToolRegistry:
         try:
             result = await manager.execute_tool(call.name, call.arguments)
         except Exception as exc:
-            executor.sandbox.record_execution(
+            self._record_execution(
+                executor.sandbox,
                 bare_name,
                 server_name,
                 call.arguments,
@@ -295,7 +319,8 @@ class MCPToolRegistry:
                 execution_time_ms=(time.time() - started) * 1000,
             )
             raise
-        executor.sandbox.record_execution(
+        audit_recorded = self._record_execution(
+            executor.sandbox,
             bare_name,
             server_name,
             call.arguments,
@@ -319,7 +344,11 @@ class MCPToolRegistry:
             is_error=bool(result.is_error),
             executed=True,
             safe_summary=(
-                "Tool execution failed." if result.is_error else "Tool completed."
+                "Tool execution completed, but its MCP audit record could not be written."
+                if not audit_recorded
+                else (
+                    "Tool execution failed." if result.is_error else "Tool completed."
+                )
             ),
         )
 
