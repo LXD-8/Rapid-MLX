@@ -475,11 +475,17 @@ async def test_agent_route_singleton_closes_and_resets(monkeypatch):
             closed.append(True)
 
     monkeypatch.setattr(agent_routes, "_service", Service())
+    monkeypatch.setattr(agent_routes, "_service_shutting_down", False)
     await agent_routes.close_agent_service()
     await agent_routes.close_agent_service()
 
     assert closed == [True]
     assert agent_routes._service is None
+    with pytest.raises(AgentRunCapacityError, match="shutting down"):
+        agent_routes.get_agent_service()
+
+    agent_routes.start_agent_service_lifecycle()
+    assert agent_routes._service_shutting_down is False
 
 
 @pytest.mark.asyncio
@@ -529,4 +535,32 @@ def test_all_agent_routes_share_auth_and_rate_limit_dependencies():
         {dependency.dependency for dependency in dependencies} == expected
         for dependencies in route_dependencies
     )
+
+
+def test_all_agent_routes_map_shutdown_to_503(monkeypatch):
+    cfg = reset_config()
+    cfg.model_name = "known"
+    monkeypatch.setattr(agent_routes, "_service", None)
+    monkeypatch.setattr(agent_routes, "_service_shutting_down", True)
+    app = FastAPI()
+    app.include_router(agent_routes.router)
+
+    with TestClient(app) as client:
+        responses = [
+            client.post("/v1/agent/runs", json={"goal": "x"}),
+            client.get("/v1/agent/runs/run"),
+            client.get("/v1/agent/runs/run/events"),
+            client.post(
+                "/v1/agent/runs/run/approval",
+                json={"call_id": "call", "approved": False},
+            ),
+            client.post(
+                "/v1/agent/runs/run/tool-result",
+                json={"call_id": "call", "content": "x"},
+            ),
+            client.post("/v1/agent/runs/run/cancel"),
+        ]
+
+    assert [response.status_code for response in responses] == [503] * 6
+    reset_config()
     assert get_config() is not None

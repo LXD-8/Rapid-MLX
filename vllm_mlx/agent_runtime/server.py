@@ -527,6 +527,7 @@ class _ServerRun:
     cancel_requested: bool = False
     tool_in_flight: bool = False
     seen_model_call_ids: set[bytes] = field(default_factory=set)
+    seen_opaque_call_ids: set[str] = field(default_factory=set)
 
 
 _TERMINAL_STATUSES = {
@@ -960,8 +961,12 @@ class AgentServerService:
             )
             for call in turn.tool_calls
         ]
-        if len({call.id for call in calls}) != len(calls):
+        opaque_ids = {call.id for call in calls}
+        if len(opaque_ids) != len(calls) or any(
+            call_id in entry.seen_opaque_call_ids for call_id in opaque_ids
+        ):
             raise AgentServerError("tool call ID generator returned a duplicate")
+        entry.seen_opaque_call_ids.update(opaque_ids)
         return turn.model_copy(update={"tool_calls": calls})
 
     def _append_tool_observation(

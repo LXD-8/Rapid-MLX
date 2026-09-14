@@ -61,7 +61,16 @@ async def close_agent_service() -> None:
         with _service_lock:
             if _service is service:
                 _service = None
-            _service_shutting_down = False
+
+
+def start_agent_service_lifecycle() -> None:
+    """Explicitly open the singleton gate for a new FastAPI lifespan."""
+
+    global _service_shutting_down
+    with _service_lock:
+        if _service is not None:
+            raise RuntimeError("agent service survived the previous lifespan")
+        _service_shutting_down = False
 
 
 async def _entry_model_config(entry) -> dict | None:
@@ -130,7 +139,7 @@ async def create_agent_run(request: AgentRunCreateRequest) -> AgentRunView:
 async def get_agent_run(run_id: str) -> AgentRunView:
     try:
         return get_agent_service().get(run_id)
-    except AgentRunNotFoundError as exc:
+    except (AgentRunNotFoundError, AgentRunCapacityError) as exc:
         raise _http_error(exc) from exc
 
 
@@ -140,7 +149,7 @@ async def get_agent_events(
 ) -> AgentEventsView:
     try:
         return get_agent_service().events(run_id, after=after)
-    except AgentRunNotFoundError as exc:
+    except (AgentRunNotFoundError, AgentRunCapacityError) as exc:
         raise _http_error(exc) from exc
 
 
@@ -150,7 +159,11 @@ async def approve_agent_action(
 ) -> AgentRunView:
     try:
         return await get_agent_service().approve(run_id, request)
-    except (AgentRunNotFoundError, AgentRunConflictError) as exc:
+    except (
+        AgentRunNotFoundError,
+        AgentRunConflictError,
+        AgentRunCapacityError,
+    ) as exc:
         raise _http_error(exc) from exc
 
 
@@ -160,7 +173,11 @@ async def submit_agent_tool_result(
 ) -> AgentRunView:
     try:
         return await get_agent_service().submit_result(run_id, request)
-    except (AgentRunNotFoundError, AgentRunConflictError) as exc:
+    except (
+        AgentRunNotFoundError,
+        AgentRunConflictError,
+        AgentRunCapacityError,
+    ) as exc:
         raise _http_error(exc) from exc
 
 
@@ -168,5 +185,5 @@ async def submit_agent_tool_result(
 async def cancel_agent_run(run_id: str) -> AgentRunView:
     try:
         return await get_agent_service().cancel(run_id)
-    except AgentRunNotFoundError as exc:
+    except (AgentRunNotFoundError, AgentRunCapacityError) as exc:
         raise _http_error(exc) from exc

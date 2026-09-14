@@ -701,6 +701,10 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager, _primary_model_lifecycle
 
+    from .routes.agents import start_agent_service_lifecycle
+
+    start_agent_service_lifecycle()
+
     # Install process-death observability BEFORE any executor is created.
     # Two complementary mechanisms (codex r3 NIT clarification):
     #

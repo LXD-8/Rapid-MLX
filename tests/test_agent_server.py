@@ -813,6 +813,33 @@ async def test_repeated_model_authored_call_id_fails_before_opaque_replacement()
 
 
 @pytest.mark.asyncio
+async def test_opaque_call_id_must_be_unique_across_the_run():
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)),
+        chat_driver=ScriptedDriver(
+            AgentModelTurn(
+                tool_calls=[
+                    AgentToolCall(id="first", name=READ.name, arguments={"path": "one"})
+                ]
+            ),
+            AgentModelTurn(
+                tool_calls=[
+                    AgentToolCall(
+                        id="second", name=READ.name, arguments={"path": "two"}
+                    )
+                ]
+            ),
+        ),
+        call_id_factory=lambda: "call_same",
+    )
+
+    created = await service.create(AgentRunCreateRequest(goal="Read"), model="model")
+    failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
+
+    assert failed.failure_code == "agent_adapter_failure"
+
+
+@pytest.mark.asyncio
 async def test_assistant_history_uses_json_arguments_not_python_repr():
     call = AgentToolCall(id="c", name=READ.name, arguments={"path": "你好"})
     driver = ScriptedDriver(AgentModelTurn(tool_calls=[call]))
