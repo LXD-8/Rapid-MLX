@@ -414,6 +414,39 @@ async def test_capacity_never_evicts_an_active_run():
 
 
 @pytest.mark.asyncio
+async def test_full_or_closed_store_rejects_before_registry_snapshot():
+    blocker = asyncio.Event()
+
+    async def blocked_driver(*_args):
+        await blocker.wait()
+        return AgentModelTurn(content="done")
+
+    class SnapshotRegistry(FakeRegistry):
+        snapshots = 0
+
+        def snapshot(self):
+            self.snapshots += 1
+            return self
+
+    registry = SnapshotRegistry(())
+    service = AgentServerService(
+        registry=registry, chat_driver=blocked_driver, max_runs=1
+    )
+    first = await service.create(AgentRunCreateRequest(goal="First"), model="model")
+    assert registry.snapshots == 1
+
+    with pytest.raises(AgentRunCapacityError, match="slots are active"):
+        await service.create(AgentRunCreateRequest(goal="Second"), model="model")
+    assert registry.snapshots == 1
+
+    await service.cancel(first.id)
+    await service.close()
+    with pytest.raises(AgentRunCapacityError, match="shutting down"):
+        await service.create(AgentRunCreateRequest(goal="Third"), model="model")
+    assert registry.snapshots == 1
+
+
+@pytest.mark.asyncio
 async def test_old_terminal_run_is_evicted_to_make_room():
     driver = ScriptedDriver(
         AgentModelTurn(content="one"), AgentModelTurn(content="two")
@@ -575,6 +608,34 @@ async def test_cancel_wins_when_model_driver_swallows_task_cancellation():
     assert "run.completed" not in [
         event.type for event in service.events(created.id).events
     ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_does_not_wait_for_driver_that_swallows_cancellation():
+    started = asyncio.Event()
+    swallowed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stubborn_driver(*_args):
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            swallowed.set()
+            await release.wait()
+            return AgentModelTurn(content="must not complete")
+
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=stubborn_driver)
+    created = await service.create(AgentRunCreateRequest(goal="wait"), model="model")
+    await started.wait()
+
+    cancelled = await asyncio.wait_for(service.cancel(created.id), timeout=0.5)
+
+    assert cancelled.status is AgentRunStatus.CANCELLED
+    await swallowed.wait()
+    release.set()
+    await asyncio.sleep(0)
+    assert service.get(created.id).status is AgentRunStatus.CANCELLED
 
 
 @pytest.mark.asyncio
@@ -801,6 +862,26 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
             "clientSecret": "[redacted]",
         },
     }
+
+
+def test_approval_summary_bounds_depth_items_keys_and_text():
+    nested = {"value": "bottom"}
+    for _ in range(10):
+        nested = {"next": nested}
+    summary = _approval_argument_summary(
+        {
+            "nested": nested,
+            "long": "x" * 1_000,
+            "k" * 1_000: "value",
+            "items": list(range(100)),
+        }
+    )
+
+    encoded = json.dumps(summary)
+    assert "[truncated]" in encoded
+    assert "x" * 257 not in encoded
+    assert "k" * 129 not in encoded
+    assert len(encoded) < 12_000
 
 
 @pytest.mark.asyncio

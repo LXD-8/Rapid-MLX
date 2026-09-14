@@ -54,10 +54,12 @@ same name. The old connection may instead report unavailable; create a new run
 to use the reloaded registry.
 
 While a run is `awaiting_approval`, its authenticated run view includes a
-Rapid-generated `approval_summary`. It completely preserves ordinary decision
-fields such as recipient, path, command, and amount while recursively redacting
-credential-shaped keys. Neither that summary nor the original arguments enter
-the event stream.
+Rapid-generated `approval_summary`. It preserves ordinary decision fields such
+as recipient, path, command, and amount while recursively redacting
+credential-shaped keys. The preview is capped at six nested levels, 32 fields
+or list items, 128 characters per key, and 256 characters per string; omitted
+material is marked `[truncated]`. Neither that summary nor the original
+arguments enter the event stream.
 
 ## Create and observe a run
 
@@ -160,7 +162,11 @@ Cancellation aborts the current model request and makes the run terminal.
 If an MCP call has already been dispatched, Rapid does not pretend it was
 cancelled: it waits for that call's existing timeout/result, records the
 execution outcome, and only then marks the run cancelled. This makes completed
-or failed external actions visible before an operator retries them.
+or failed external actions visible before an operator retries them. In `client`
+execution mode, once arguments have been released to the caller, Rapid cannot
+know whether that caller committed the action. Cancelling then records a
+`tool.completed` event with `executed:null` before `run.cancelled`; do not retry
+that action automatically.
 Server shutdown cancels all active runs before MCP connections and the model
 engine are torn down.
 

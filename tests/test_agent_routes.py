@@ -414,6 +414,40 @@ def test_agent_create_qualifies_custom_local_minicpm_from_metadata(monkeypatch):
     reset_config()
 
 
+def test_agent_create_maps_model_metadata_failure_to_503(monkeypatch):
+    from types import SimpleNamespace
+
+    class Registry:
+        def __contains__(self, name):
+            return name == "known"
+
+        def get_entry(self, _name):
+            return SimpleNamespace(
+                model_path="/models/unreadable",
+                model_name="known",
+                tool_call_parser=None,
+            )
+
+    cfg = reset_config()
+    cfg.model_name = "known"
+    cfg.model_registry = Registry()
+
+    def fail_read(_path):
+        raise OSError("private filesystem detail")
+
+    monkeypatch.setattr(agent_routes, "read_model_metadata", fail_read)
+    app = FastAPI()
+    app.include_router(agent_routes.router)
+
+    with TestClient(app) as client:
+        response = client.post("/v1/agent/runs", json={"goal": "x"})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "model metadata is temporarily unavailable"}
+    assert "private filesystem detail" not in response.text
+    reset_config()
+
+
 @pytest.mark.asyncio
 async def test_single_model_metadata_is_cached_per_engine_generation(monkeypatch):
     from types import SimpleNamespace

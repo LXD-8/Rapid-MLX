@@ -45,34 +45,62 @@ Rules:
 - Final answers must state the result and evidence; citations must be exact source URLs.
 """
 _MAX_TOOL_RESULT_CHARS = 240_000
+_MAX_APPROVAL_DEPTH = 6
+_MAX_APPROVAL_ITEMS = 32
+_MAX_APPROVAL_TEXT_CHARS = 256
+_APPROVAL_TRUNCATED = "[truncated]"
 
 
 def _approval_argument_summary(value: Any, *, key: str = "") -> Any:
-    """Build a complete operator preview without exposing credential fields."""
+    """Build a bounded operator preview without exposing credential fields."""
 
     from ..mcp.security import is_sensitive_argument_key
 
-    if key and is_sensitive_argument_key(key):
-        return "[redacted]"
-    if isinstance(value, dict):
-        summarized = {}
-        for index, (item_key, item_value) in enumerate(value.items(), start=1):
-            raw_key = str(item_key)
-            if is_sensitive_argument_key(raw_key):
-                display_key = (
-                    raw_key
-                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", raw_key)
-                    else f"[redacted-key-{index}]"
-                )
-                summarized[display_key] = "[redacted]"
-            else:
-                summarized[raw_key] = _approval_argument_summary(
-                    item_value, key=raw_key
-                )
-        return summarized
-    if isinstance(value, list):
-        return [_approval_argument_summary(item) for item in value]
-    return value
+    remaining = [_MAX_APPROVAL_ITEMS]
+
+    def summarize(item: Any, item_key: str, depth: int) -> Any:
+        if item_key and is_sensitive_argument_key(item_key):
+            return "[redacted]"
+        if depth >= _MAX_APPROVAL_DEPTH:
+            return _APPROVAL_TRUNCATED
+        if isinstance(item, dict):
+            summarized = {}
+            for index, (nested_key, nested_value) in enumerate(item.items(), start=1):
+                if remaining[0] <= 0:
+                    summarized[_APPROVAL_TRUNCATED] = "additional fields omitted"
+                    break
+                remaining[0] -= 1
+                raw_key = str(nested_key)
+                if is_sensitive_argument_key(raw_key):
+                    display_key = (
+                        raw_key
+                        if len(raw_key) <= 128
+                        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", raw_key)
+                        else f"[redacted-key-{index}]"
+                    )
+                    summarized[display_key] = "[redacted]"
+                else:
+                    display_key = (
+                        raw_key if len(raw_key) <= 128 else f"[key-{index}-truncated]"
+                    )
+                    summarized[display_key] = summarize(
+                        nested_value, raw_key, depth + 1
+                    )
+            return summarized
+        if isinstance(item, list):
+            summarized_list = []
+            for nested_value in item:
+                if remaining[0] <= 0:
+                    summarized_list.append(_APPROVAL_TRUNCATED)
+                    break
+                remaining[0] -= 1
+                summarized_list.append(summarize(nested_value, "", depth + 1))
+            return summarized_list
+        if isinstance(item, str) and len(item) > _MAX_APPROVAL_TEXT_CHARS:
+            return item[:_MAX_APPROVAL_TEXT_CHARS] + _APPROVAL_TRUNCATED
+        return item
+
+    return summarize(value, key, 0)
 
 
 class AgentServerError(RuntimeError):
@@ -704,34 +732,6 @@ class AgentServerService:
         profile_tool_call_parser: str | None = None,
         model_generation: Any = None,
     ) -> AgentRunView:
-        profile = resolve_agent_profile(
-            model,
-            model_config=profile_model_config,
-            tool_call_parser=profile_tool_call_parser,
-        )
-        effective_request = request.model_copy(
-            update={"max_tokens": min(request.max_tokens, profile.max_output_tokens)}
-        )
-        snapshot = getattr(self._registry, "snapshot", None)
-        run_registry = snapshot() if callable(snapshot) else self._registry
-        tools = self._select_tools(request.tool_names, profile, run_registry)
-        public_model = request_model or model
-        run = self._runtime.create_run(
-            model=public_model, goal=request.goal, profile=profile
-        )
-        entry = _ServerRun(
-            run=run,
-            request_model=public_model,
-            settings=effective_request,
-            tools=tuple(tools),
-            registry=run_registry,
-            model_generation=model_generation,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": request.goal},
-            ],
-            created_mono=self._monotonic(),
-        )
         with self._store_lock:
             if self._closed:
                 raise AgentRunCapacityError("agent runtime is shutting down")
@@ -749,6 +749,39 @@ class AgentServerService:
                 if terminal is None:
                     raise AgentRunCapacityError("all agent run slots are active")
                 self._runs.pop(terminal.run.id, None)
+            # Every operation below is synchronous. Keep the reservation lock
+            # until the live run is inserted so failed/closing requests cannot
+            # create reducer state that is absent from the bounded store.
+            profile = resolve_agent_profile(
+                model,
+                model_config=profile_model_config,
+                tool_call_parser=profile_tool_call_parser,
+            )
+            effective_request = request.model_copy(
+                update={
+                    "max_tokens": min(request.max_tokens, profile.max_output_tokens)
+                }
+            )
+            snapshot = getattr(self._registry, "snapshot", None)
+            run_registry = snapshot() if callable(snapshot) else self._registry
+            tools = self._select_tools(request.tool_names, profile, run_registry)
+            public_model = request_model or model
+            run = self._runtime.create_run(
+                model=public_model, goal=request.goal, profile=profile
+            )
+            entry = _ServerRun(
+                run=run,
+                request_model=public_model,
+                settings=effective_request,
+                tools=tuple(tools),
+                registry=run_registry,
+                model_generation=model_generation,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": request.goal},
+                ],
+                created_mono=self._monotonic(),
+            )
             self._runs[run.id] = entry
             # Atomic with respect to close(), which takes the same lock before
             # marking entries cancelled.
@@ -845,12 +878,15 @@ class AgentServerService:
         entry.cancel_requested = True
         task = entry.task
         if task is not None and not task.done():
-            if not entry.tool_in_flight:
+            if entry.tool_in_flight:
+                # A dispatched side effect must settle before cancellation so
+                # its executed/unknown outcome is preserved for the operator.
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            else:
                 task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
         async with entry.lock:
             if entry.run.status in _TERMINAL_STATUSES:
                 return self._view(entry)
@@ -872,7 +908,7 @@ class AgentServerService:
                 task.cancel()
         for entry in entries:
             task = entry.task
-            if task is not None and not task.done():
+            if task is not None and not task.done() and entry.tool_in_flight:
                 try:
                     await task
                 except asyncio.CancelledError:
@@ -948,26 +984,58 @@ class AgentServerService:
     async def _drive(
         self, entry: _ServerRun, *, call: AgentToolCall | None = None
     ) -> None:
-        async with entry.lock:
-            try:
-                if call is not None:
+        next_call = call
+        try:
+            while True:
+                if next_call is not None:
+                    async with entry.lock:
+                        if (
+                            entry.cancel_requested
+                            or entry.run.status in _TERMINAL_STATUSES
+                        ):
+                            return
+                        entry.tool_in_flight = True
+                    try:
+                        result = await self._execute_server_call(entry, next_call)
+                    except asyncio.CancelledError:
+                        async with entry.lock:
+                            entry.tool_in_flight = False
+                        raise
+                    async with entry.lock:
+                        entry.tool_in_flight = False
+                        if entry.run.status in _TERMINAL_STATUSES:
+                            return
+                        self._runtime.accept_tool_result(entry.run, result)
+                        self._append_tool_observation(entry, result)
+                        entry.pending_action = None
+                        entry.pending_risk = None
+                        if entry.cancel_requested:
+                            return
+                    next_call = None
+
+                async with entry.lock:
                     if entry.cancel_requested:
                         return
-                    await self._execute_server_call(entry, call)
-                while entry.run.status is AgentRunStatus.READY:
-                    if entry.cancel_requested:
+                    if entry.run.status is not AgentRunStatus.READY:
                         return
                     visible = self._runtime.request_model(entry.run, entry.tools)
-                    from ..service.helpers import bind_model_generation
+                    messages = [dict(message) for message in entry.messages]
+                    settings = entry.settings
+                    request_model = entry.request_model
+                    model_generation = entry.model_generation
 
-                    with bind_model_generation(entry.model_generation):
-                        turn = await self._chat_driver(
-                            entry.request_model,
-                            [dict(message) for message in entry.messages],
-                            visible,
-                            entry.settings,
-                        )
-                    if entry.cancel_requested:
+                from ..service.helpers import bind_model_generation
+
+                with bind_model_generation(model_generation):
+                    turn = await self._chat_driver(
+                        request_model,
+                        messages,
+                        visible,
+                        settings,
+                    )
+
+                async with entry.lock:
+                    if entry.cancel_requested or entry.run.status in _TERMINAL_STATUSES:
                         return
                     turn = self._replace_model_call_ids(entry, turn)
                     self._append_assistant_turn(entry, turn)
@@ -996,61 +1064,57 @@ class AgentServerService:
                     entry.pending_risk = entry.run.pending_risk
                     if entry.settings.execution == "client":
                         return
-                    await self._execute_server_call(entry, output.call)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
+                    next_call = output.call
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            async with entry.lock:
                 logger.warning(
                     "Agent run %s failed in server adapter (%s)",
                     entry.run.id,
                     type(exc).__name__,
                 )
-                if entry.run.status not in _TERMINAL_STATUSES:
+                if (
+                    not entry.cancel_requested
+                    and entry.run.status not in _TERMINAL_STATUSES
+                ):
                     self._runtime.fail(entry.run, "agent_adapter_failure")
-                entry.pending_action = None
-                entry.pending_risk = None
-                self._mark_terminal(entry)
+                    entry.pending_action = None
+                    entry.pending_risk = None
+                    self._mark_terminal(entry)
 
     async def _execute_server_call(
         self, entry: _ServerRun, call: AgentToolCall
-    ) -> None:
-        entry.tool_in_flight = True
+    ) -> AgentToolResult:
         try:
-            try:
-                result = await entry.registry.execute(call)
-            except AgentToolExecutionError as exc:
-                result = AgentToolResult(
-                    call_id=call.id,
-                    content=(
-                        "Tool execution failed after dispatch."
-                        if exc.executed
-                        else "Tool execution failed before dispatch."
-                    ),
-                    is_error=True,
-                    executed=exc.executed,
-                    safe_summary=(
-                        "Tool execution failed after dispatch."
-                        if exc.executed
-                        else "Tool execution failed; no action was executed."
-                    ),
-                )
-            except Exception:
-                # An untyped third-party registry exception does not reveal
-                # whether dispatch occurred. Preserve that uncertainty rather
-                # than encourage an unsafe retry with a false boolean.
-                result = AgentToolResult(
-                    call_id=call.id,
-                    content="Tool execution outcome is unknown; do not retry automatically.",
-                    is_error=True,
-                    executed=None,
-                    safe_summary="Tool execution outcome is unknown; do not retry automatically.",
-                )
-            self._runtime.accept_tool_result(entry.run, result)
-            self._append_tool_observation(entry, result)
-            entry.pending_action = None
-            entry.pending_risk = None
-        finally:
-            entry.tool_in_flight = False
+            return await entry.registry.execute(call)
+        except AgentToolExecutionError as exc:
+            return AgentToolResult(
+                call_id=call.id,
+                content=(
+                    "Tool execution failed after dispatch."
+                    if exc.executed
+                    else "Tool execution failed before dispatch."
+                ),
+                is_error=True,
+                executed=exc.executed,
+                safe_summary=(
+                    "Tool execution failed after dispatch."
+                    if exc.executed
+                    else "Tool execution failed; no action was executed."
+                ),
+            )
+        except Exception:
+            # An untyped third-party registry exception does not reveal
+            # whether dispatch occurred. Preserve that uncertainty rather
+            # than encourage an unsafe retry with a false boolean.
+            return AgentToolResult(
+                call_id=call.id,
+                content="Tool execution outcome is unknown; do not retry automatically.",
+                is_error=True,
+                executed=None,
+                safe_summary="Tool execution outcome is unknown; do not retry automatically.",
+            )
 
     def _append_assistant_turn(self, entry: _ServerRun, turn: AgentModelTurn) -> None:
         message: dict[str, Any] = {

@@ -136,11 +136,25 @@ async def create_agent_run(request: AgentRunCreateRequest) -> AgentRunView:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         profile_model = entry.model_path or entry.model_name
-        profile_model_config = await _entry_model_config(entry)
+        try:
+            profile_model_config = await _entry_model_config(entry)
+        except (OSError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="model metadata is temporarily unavailable",
+            ) from exc
         profile_tool_call_parser = entry.tool_call_parser
         model_generation = entry
     elif cfg.model_path:
-        profile_model_config = await _single_model_config(cfg.engine, cfg.model_path)
+        try:
+            profile_model_config = await _single_model_config(
+                cfg.engine, cfg.model_path
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="model metadata is temporarily unavailable",
+            ) from exc
     try:
         return await get_agent_service().create(
             request,
