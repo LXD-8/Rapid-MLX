@@ -120,7 +120,9 @@ def test_batch_generator_installer_replays_and_cleans_up(monkeypatch) -> None:
     from vllm_mlx.singleton_cache_fastpath import install_singleton_cache_fastpath
 
     install_singleton_cache_fastpath()
-    generator = BatchGenerator(_ToyModel(), max_tokens=4)
+    generator = BatchGenerator(
+        _ToyModel(), max_tokens=4, stream=mx.new_stream(mx.default_device())
+    )
     assert compiled_decode.install_compiled_decode(
         generator, generator.model, model_name="qualified"
     )
@@ -153,7 +155,11 @@ def test_batch_join_promotes_compiled_cache_then_new_singleton_reattaches(
 
     install_singleton_cache_fastpath()
     generator = BatchGenerator(
-        _ToyModel(), max_tokens=8, prefill_batch_size=2, completion_batch_size=2
+        _ToyModel(),
+        max_tokens=8,
+        prefill_batch_size=2,
+        completion_batch_size=2,
+        stream=mx.new_stream(mx.default_device()),
     )
     assert compiled_decode.install_compiled_decode(
         generator, generator.model, model_name="qualified"
@@ -200,7 +206,9 @@ def test_declined_request_does_not_retry_cache_conversion_each_token(
         raise ValueError("deliberate boundary decline")
 
     monkeypatch.setattr(compiled_decode, "convert_cache", decline)
-    generator = BatchGenerator(_ToyModel(), max_tokens=5)
+    generator = BatchGenerator(
+        _ToyModel(), max_tokens=5, stream=mx.new_stream(mx.default_device())
+    )
     assert compiled_decode.install_compiled_decode(
         generator, generator.model, model_name="qualified"
     )
