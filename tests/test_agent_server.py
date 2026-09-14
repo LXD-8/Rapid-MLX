@@ -677,6 +677,8 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
             "api_token": "secret-token",
             "apiKey": "secret-api-key",
             "auth": "secret-auth",
+            "authentication": "secret-authentication",
+            "signing_key": "secret-signing-key",
             "bearer": "secret-bearer",
             "jwt": "secret-jwt",
             "access_key_id": "secret-access-key",
@@ -694,6 +696,8 @@ def test_approval_summary_preserves_decision_fields_and_redacts_credentials():
         "api_token": "[redacted]",
         "apiKey": "[redacted]",
         "auth": "[redacted]",
+        "authentication": "[redacted]",
+        "signing_key": "[redacted]",
         "bearer": "[redacted]",
         "jwt": "[redacted]",
         "access_key_id": "[redacted]",
@@ -1242,7 +1246,7 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
 
     manager.result = RuntimeError("private exception")
     uncertain = await MCPToolRegistry().execute(call)
-    assert uncertain.executed is True
+    assert uncertain.executed is None
     assert uncertain.is_error is True
     assert "private exception" not in uncertain.content
     assert audited[-1][1]["error_message"] == "RuntimeError"

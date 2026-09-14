@@ -394,10 +394,10 @@ class MCPToolRegistry:
             )
             return AgentToolResult(
                 call_id=call.id,
-                content="Tool execution failed after dispatch.",
+                content="Tool execution outcome is unknown; do not retry automatically.",
                 is_error=True,
-                executed=True,
-                safe_summary="Tool execution failed after dispatch.",
+                executed=None,
+                safe_summary="Tool execution outcome is unknown; do not retry automatically.",
             )
         audit_recorded = self._record_execution(
             executor.sandbox,

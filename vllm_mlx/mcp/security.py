@@ -58,6 +58,13 @@ def is_sensitive_argument_key(key: str) -> bool:
         )
     ]
     collapsed = "".join(words)
+    # Preserve the pre-existing conservative substring policy. False-positive
+    # redaction is preferable to leaking a credential under a novel spelling.
+    if any(
+        marker in key.casefold()
+        for marker in ("password", "token", "secret", "key", "credential", "auth")
+    ):
+        return True
     if collapsed in _SENSITIVE_KEY_WORDS or any(
         word in _SENSITIVE_KEY_WORDS for word in words
     ):
