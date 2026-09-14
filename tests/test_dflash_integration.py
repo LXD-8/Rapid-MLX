@@ -1901,6 +1901,37 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
     return captured
 
 
+@pytest.mark.parametrize(
+    ("reasoning_max_tokens", "expected"),
+    [
+        (None, {"max_tokens": 64, "enable_thinking": False}),
+        (
+            23,
+            {
+                "max_tokens": 64,
+                "enable_thinking": True,
+                "thinking_budget": 23,
+            },
+        ),
+    ],
+)
+def test_thinking_controls_map_to_mlx_vlm_generation_kwargs(
+    reasoning_max_tokens, expected
+) -> None:
+    """The public Rapid API maps to mlx-vlm without requiring mlx at test time."""
+    from vllm_mlx.speculative.dflash.server import (
+        _apply_thinking_generation_kwargs,
+    )
+
+    generation_kwargs = {"max_tokens": 64}
+    _apply_thinking_generation_kwargs(
+        generation_kwargs,
+        enable_thinking=reasoning_max_tokens is not None,
+        reasoning_max_tokens=reasoning_max_tokens,
+    )
+    assert generation_kwargs == expected
+
+
 @_skip_without_mlx_vlm
 def test_no_thinking_server_flag_forces_enable_thinking_false(monkeypatch) -> None:
     """``--no-thinking`` server-side must force ``enable_thinking=False``

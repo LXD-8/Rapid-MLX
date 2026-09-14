@@ -168,6 +168,18 @@ def _format_timeout_seconds(seconds: float) -> str:
     return f"{seconds:.1f} seconds"
 
 
+def _apply_thinking_generation_kwargs(
+    gen_kwargs: dict[str, Any],
+    *,
+    enable_thinking: bool,
+    reasoning_max_tokens: int | None,
+) -> None:
+    """Translate Rapid's public thinking controls to mlx-vlm kwargs."""
+    gen_kwargs["enable_thinking"] = enable_thinking
+    if reasoning_max_tokens is not None:
+        gen_kwargs["thinking_budget"] = reasoning_max_tokens
+
+
 class _DFlashClientGoneError(Exception):
     """Raised inside the stream producer when a CONTENT-frame ``put`` blocks
     on a full SSE handoff queue past ``_STREAM_BACKPRESSURE_TIMEOUT_SECONDS``
@@ -1036,9 +1048,11 @@ def _build_app(
             # though the prompt opened a thinking block. The public Rapid API
             # names the per-request cap ``reasoning_max_tokens`` while
             # mlx-vlm calls the generation kwarg ``thinking_budget``.
-            gen_kwargs["enable_thinking"] = effective_thinking
-            if request.reasoning_max_tokens is not None:
-                gen_kwargs["thinking_budget"] = request.reasoning_max_tokens
+            _apply_thinking_generation_kwargs(
+                gen_kwargs,
+                enable_thinking=effective_thinking,
+                reasoning_max_tokens=request.reasoning_max_tokens,
+            )
 
             # Pass the REMAINING budget (post-render) to the completion helper,
             # not the original timeout, so the single absolute deadline
