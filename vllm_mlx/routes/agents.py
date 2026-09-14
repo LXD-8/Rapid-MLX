@@ -18,6 +18,7 @@ from ..agent_runtime.server import (
     AgentRunNotFoundError,
     AgentRunView,
     AgentServerService,
+    AgentToolRegistryUnavailableError,
     AgentToolResultRequest,
     AgentToolSelectionError,
 )
@@ -107,6 +108,8 @@ def _http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, AgentRunCapacityError):
         return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, AgentToolRegistryUnavailableError):
+        return HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, AgentToolSelectionError):
         return HTTPException(status_code=422, detail=str(exc))
     return HTTPException(status_code=409, detail=str(exc))
@@ -147,7 +150,11 @@ async def create_agent_run(request: AgentRunCreateRequest) -> AgentRunView:
             profile_tool_call_parser=profile_tool_call_parser,
             model_generation=model_generation,
         )
-    except (AgentRunCapacityError, AgentToolSelectionError) as exc:
+    except (
+        AgentRunCapacityError,
+        AgentToolSelectionError,
+        AgentToolRegistryUnavailableError,
+    ) as exc:
         raise _http_error(exc) from exc
 
 

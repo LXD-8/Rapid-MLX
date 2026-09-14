@@ -471,7 +471,7 @@ def test_agent_http_surface_maps_success_and_stable_failures(monkeypatch):
             == 404
         )
 
-        result = {"call_id": "call", "content": "ok"}
+        result = {"call_id": "call", "content": "ok", "executed": True}
         assert (
             client.post("/v1/agent/runs/run-1/tool-result", json=result).status_code
             == 200
@@ -583,7 +583,7 @@ def test_all_agent_routes_map_shutdown_to_503(monkeypatch):
             ),
             client.post(
                 "/v1/agent/runs/run/tool-result",
-                json={"call_id": "call", "content": "x"},
+                json={"call_id": "call", "content": "x", "executed": False},
             ),
             client.post("/v1/agent/runs/run/cancel"),
         ]

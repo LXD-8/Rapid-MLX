@@ -103,6 +103,10 @@ class AgentToolExecutionError(AgentServerError):
         self.executed = executed
 
 
+class AgentToolRegistryUnavailableError(AgentServerError):
+    pass
+
+
 class _WireModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -140,7 +144,7 @@ class AgentToolResultRequest(_WireModel):
     call_id: str = Field(min_length=1, max_length=256)
     content: str = Field(max_length=262_144)
     is_error: StrictBool = False
-    executed: StrictBool = True
+    executed: StrictBool
 
 
 class AgentPendingAction(_WireModel):
@@ -184,6 +188,76 @@ ChatTurnDriver = Callable[
 ]
 
 
+@dataclass(frozen=True)
+class _PinnedMCPConfig:
+    agent_read_only_tools: tuple[str, ...]
+    default_timeout: float
+
+
+class _PinnedMCPManager:
+    """Immutable advertised targets over exact client/tool identities."""
+
+    def __init__(self, manager: Any) -> None:
+        self._manager = manager
+        self._tools = tuple(manager.get_all_tools())
+        self.config = _PinnedMCPConfig(
+            agent_read_only_tools=tuple(manager.config.agent_read_only_tools),
+            default_timeout=float(manager.config.default_timeout),
+        )
+        get_client = manager.get_client
+        self._targets = {
+            tool.full_name: (
+                tool.server_name,
+                tool.name,
+                get_client(tool.server_name),
+                tool,
+            )
+            for tool in self._tools
+        }
+
+    def get_all_tools(self) -> tuple[Any, ...]:
+        return self._tools
+
+    def _target(self, full_name: str) -> tuple[str, str, Any, Any] | None:
+        target = self._targets.get(full_name)
+        if target is None:
+            return None
+        server_name, bare_name, client, advertised_tool = target
+        try:
+            current_client = self._manager.get_client(server_name)
+            valid = (
+                client is not None
+                and current_client is client
+                and client.is_connected
+                and any(tool is advertised_tool for tool in client.tools)
+            )
+        except Exception:
+            valid = False
+        return target if valid else None
+
+    def resolve_tool_target(self, full_name: str) -> tuple[str | None, str]:
+        target = self._target(full_name)
+        return (None, full_name) if target is None else target[:2]
+
+    def get_client(self, server_name: str) -> Any:
+        for full_name in self._targets:
+            target = self._target(full_name)
+            if target is not None and target[0] == server_name:
+                return target[2]
+        return None
+
+    async def execute_tool(self, full_name: str, arguments: dict[str, Any]) -> Any:
+        target = self._target(full_name)
+        if target is None:
+            raise AgentToolExecutionError(executed=False)
+        _, bare_name, client, _ = target
+        return await client.call_tool(
+            bare_name,
+            arguments,
+            timeout=self.config.default_timeout,
+        )
+
+
 def classify_mcp_tool(name: str, *, declared_read_only: Sequence[str] = ()) -> ToolRisk:
     """Trust only an exact operator declaration; unknown tools need approval."""
 
@@ -214,11 +288,15 @@ class MCPToolRegistry:
         from ..config import get_config
 
         cfg = get_config()
-        return MCPToolRegistry(
-            manager=cfg.mcp_manager,
-            executor=cfg.mcp_executor,
-            pinned=True,
-        )
+        manager = cfg.mcp_manager
+        if manager is not None:
+            try:
+                manager = _PinnedMCPManager(manager)
+            except Exception as exc:
+                raise AgentToolRegistryUnavailableError(
+                    "MCP registry is unavailable"
+                ) from exc
+        return MCPToolRegistry(manager=manager, executor=cfg.mcp_executor, pinned=True)
 
     def _components(self) -> tuple[Any, Any]:
         if self._pinned:
@@ -259,8 +337,14 @@ class MCPToolRegistry:
         if manager is None:
             return []
         projected: list[ToolSpec] = []
-        declared_read_only = manager.config.agent_read_only_tools
-        for tool in manager.get_all_tools():
+        try:
+            declared_read_only = manager.config.agent_read_only_tools
+            available_tools = manager.get_all_tools()
+        except Exception as exc:
+            raise AgentToolRegistryUnavailableError(
+                "MCP registry is unavailable"
+            ) from exc
+        for tool in available_tools:
             if not _OPENAI_TOOL_NAME.fullmatch(tool.full_name):
                 logger.warning(
                     "Agent runtime skipped incompatible MCP tool %r", tool.full_name
@@ -400,6 +484,31 @@ class MCPToolRegistry:
         started = time.time()
         try:
             result = await manager.execute_tool(call.name, call.arguments)
+        except AgentToolExecutionError as exc:
+            self._record_execution(
+                executor.sandbox,
+                bare_name,
+                server_name,
+                call.arguments,
+                success=False,
+                error_message="MCP dispatch rejected",
+                execution_time_ms=(time.time() - started) * 1000,
+            )
+            return AgentToolResult(
+                call_id=call.id,
+                content=(
+                    "Tool execution failed after dispatch."
+                    if exc.executed
+                    else "Tool execution failed; no action was executed."
+                ),
+                is_error=True,
+                executed=exc.executed,
+                safe_summary=(
+                    "Tool execution failed after dispatch."
+                    if exc.executed
+                    else "Tool execution failed; no action was executed."
+                ),
+            )
         except Exception as exc:
             self._record_execution(
                 executor.sandbox,

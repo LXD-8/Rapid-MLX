@@ -140,6 +140,8 @@ curl -sS http://127.0.0.1:8000/v1/agent/runs/RUN_ID/tool-result \
 Server-executed runs reject client results. Client-authored result content is
 transient; clients cannot author the event `safe_summary` field. This prevents
 secrets or tool output from being copied into the event stream.
+The `executed` boolean is required: Desktop must explicitly distinguish a
+pre-dispatch failure from a call it actually attempted.
 
 Tool completion events use `executed:true` when dispatch occurred,
 `executed:false` for a known pre-dispatch rejection, and `executed:null` when a

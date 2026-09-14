@@ -257,7 +257,7 @@ async def test_client_mode_releases_call_then_accepts_one_matching_result():
     with pytest.raises(AgentRunConflictError, match="does not match"):
         await service.submit_result(
             created.id,
-            AgentToolResultRequest(call_id="wrong", content="result"),
+            AgentToolResultRequest(call_id="wrong", content="result", executed=False),
         )
 
     await service.submit_result(
@@ -297,7 +297,8 @@ async def test_client_side_effect_requires_approval_before_result():
 
     with pytest.raises(AgentRunConflictError, match="awaiting_tool_result"):
         await service.submit_result(
-            created.id, AgentToolResultRequest(call_id=opaque_id, content="forged")
+            created.id,
+            AgentToolResultRequest(call_id=opaque_id, content="forged", executed=False),
         )
     approved = await service.approve(
         created.id, AgentApprovalRequest(call_id=opaque_id, approved=True)
@@ -307,7 +308,8 @@ async def test_client_side_effect_requires_approval_before_result():
     assert approved.pending_action.arguments == {"body": "x"}
     assert approved.pending_action.risk is ToolRisk.EXTERNAL_SIDE_EFFECT
     await service.submit_result(
-        created.id, AgentToolResultRequest(call_id=opaque_id, content="sent")
+        created.id,
+        AgentToolResultRequest(call_id=opaque_id, content="sent", executed=True),
     )
 
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
@@ -327,7 +329,10 @@ async def test_server_mode_rejects_client_result_injection():
 
     with pytest.raises(AgentRunConflictError, match="do not accept"):
         await service.submit_result(
-            created.id, AgentToolResultRequest(call_id="invented", content="inject")
+            created.id,
+            AgentToolResultRequest(
+                call_id="invented", content="inject", executed=False
+            ),
         )
     await service.cancel(created.id)
 
@@ -1013,20 +1018,31 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
     class Manager:
         def __init__(self, generation):
             self.generation = generation
-            self.config = SimpleNamespace(agent_read_only_tools=[])
+            self.config = SimpleNamespace(
+                agent_read_only_tools=[], default_timeout=30.0
+            )
+            self.tool = MCPTool("same", "tool", "tool", {"type": "object"})
+            manager = self
+
+            class Client:
+                is_connected = True
+                tools = [manager.tool]
+
+                async def call_tool(self, *_args, **_kwargs):
+                    calls.append(manager.generation)
+                    return MCPToolResult("same__tool", "ok")
+
+            self.client = Client()
 
         def get_all_tools(self):
-            return [MCPTool("same", "tool", "tool", {"type": "object"})]
+            return [self.tool]
 
-        def resolve_tool_target(self, _name):
-            return "same", "tool"
-
-        async def execute_tool(self, *_args):
-            calls.append(self.generation)
-            return MCPToolResult("same__tool", "ok")
+        def get_client(self, _name):
+            return self.client
 
     cfg = reset_config()
-    cfg.mcp_manager = Manager("advertised")
+    advertised = Manager("advertised")
+    cfg.mcp_manager = advertised
     cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
     snapshot = MCPToolRegistry().snapshot()
     assert [tool.name for tool in snapshot.list_tools()] == ["same__tool"]
@@ -1035,6 +1051,17 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
     cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
     await snapshot.execute(AgentToolCall(id="call", name="same__tool", arguments={}))
 
+    assert calls == ["advertised"]
+
+    # An in-place refresh replaces the advertised tool identity. The old run
+    # must fail closed rather than dispatch by the same mutable name.
+    advertised.client.tools = [
+        MCPTool("same", "tool", "replacement", {"type": "object"})
+    ]
+    stale = await snapshot.execute(
+        AgentToolCall(id="stale", name="same__tool", arguments={})
+    )
+    assert stale.executed is False
     assert calls == ["advertised"]
     reset_config()
 
@@ -1094,7 +1121,9 @@ async def test_run_never_switches_to_replacement_model_generation():
     await service.submit_result(
         created.id,
         AgentToolResultRequest(
-            call_id=waiting.pending_action.call_id, content="result"
+            call_id=waiting.pending_action.call_id,
+            content="result",
+            executed=True,
         ),
     )
     failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
