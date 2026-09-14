@@ -49,6 +49,7 @@ _MAX_APPROVAL_DEPTH = 6
 _MAX_APPROVAL_ITEMS = 32
 _MAX_APPROVAL_TEXT_CHARS = 256
 _APPROVAL_TRUNCATED = "[truncated]"
+_SHUTDOWN_JOIN_SECONDS = 30.0
 
 
 def _approval_argument_summary(value: Any, *, key: str = "") -> Any:
@@ -906,13 +907,25 @@ class AgentServerService:
             task = entry.task
             if task is not None and not task.done() and not entry.tool_in_flight:
                 task.cancel()
+        active_tasks = {
+            entry.task
+            for entry in entries
+            if entry.task is not None and not entry.task.done()
+        }
+        if active_tasks:
+            done, pending = await asyncio.wait(
+                active_tasks, timeout=_SHUTDOWN_JOIN_SECONDS
+            )
+            for task in done:
+                if not task.cancelled():
+                    task.exception()
+            if pending:
+                for task in pending:
+                    task.cancel()
+                raise AgentRunCapacityError(
+                    "agent runtime work did not stop before the shutdown deadline"
+                )
         for entry in entries:
-            task = entry.task
-            if task is not None and not task.done() and entry.tool_in_flight:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
             async with entry.lock:
                 if entry.run.status not in _TERMINAL_STATUSES:
                     self._record_unknown_client_outcome(entry)

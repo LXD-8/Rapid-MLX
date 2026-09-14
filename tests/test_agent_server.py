@@ -1587,6 +1587,35 @@ async def test_close_cancels_active_work_and_rejects_new_runs():
 
 
 @pytest.mark.asyncio
+async def test_close_fails_boundedly_if_generation_does_not_stop(monkeypatch):
+    import vllm_mlx.agent_runtime.server as agent_server
+
+    started = asyncio.Event()
+
+    async def cancellation_delaying_driver(*_args):
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            await asyncio.Future()
+
+    monkeypatch.setattr(agent_server, "_SHUTDOWN_JOIN_SECONDS", 0.01)
+    service = AgentServerService(
+        registry=FakeRegistry(()), chat_driver=cancellation_delaying_driver
+    )
+    created = await service.create(AgentRunCreateRequest(goal="wait"), model="model")
+    await started.wait()
+
+    with pytest.raises(AgentRunCapacityError, match="shutdown deadline"):
+        await service.close()
+
+    task = service._entry(created.id).task
+    assert task is not None
+    await asyncio.sleep(0)
+    assert task.done()
+
+
+@pytest.mark.asyncio
 async def test_schedule_rejects_parallel_driver_for_same_run():
     blocker = asyncio.Event()
 

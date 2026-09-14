@@ -168,7 +168,9 @@ know whether that caller committed the action. Cancelling then records a
 `tool.completed` event with `executed:null` before `run.cancelled`; do not retry
 that action automatically.
 Server shutdown cancels all active runs before MCP connections and the model
-engine are torn down.
+engine are torn down. It joins active run tasks for up to 30 seconds; if a
+custom generation driver refuses cancellation, shutdown fails explicitly
+instead of tearing the engine down underneath live work.
 
 ## MiniCPM5-2B defaults
 
