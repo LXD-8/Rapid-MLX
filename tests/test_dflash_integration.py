@@ -1872,6 +1872,7 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
     import mlx_vlm as _mlx_vlm
 
     def _empty_gen(*a, **kw):
+        captured["generation_kwargs"] = kw
         if False:
             yield None  # pragma: no cover — generator shell
 
@@ -1935,6 +1936,8 @@ def test_request_enable_thinking_false_honored(monkeypatch) -> None:
         },
     )
     assert captured.get("enable_thinking") is False
+    assert captured["generation_kwargs"]["enable_thinking"] is False
+    assert "thinking_budget" not in captured["generation_kwargs"]
 
 
 @_skip_without_mlx_vlm
@@ -1973,7 +1976,7 @@ def test_request_enable_thinking_true_honored(monkeypatch) -> None:
 def test_explicit_thinking_is_parsed_into_reasoning_content(
     monkeypatch, stream: bool
 ) -> None:
-    """DFlash opt-in thinking uses the standard Qwen reasoning parser."""
+    """DFlash threads thinking through generation and response parsing."""
     import json
 
     import mlx_vlm
@@ -1988,17 +1991,20 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
         "apply_chat_template",
         lambda *args, **kwargs: "rendered prompt",
     )
-    monkeypatch.setattr(
-        mlx_vlm,
-        "generate",
-        lambda *args, **kwargs: SimpleNamespace(
+    generation_calls = []
+
+    def _generate(*args, **kwargs):
+        generation_calls.append(kwargs)
+        return SimpleNamespace(
             text="<think>Need one addition.</think>Four.",
             prompt_tokens=5,
             generation_tokens=7,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(mlx_vlm, "generate", _generate)
 
     def _stream(*args, **kwargs):
+        generation_calls.append(kwargs)
         for index, text in enumerate(
             ("<think>", "Need one addition.", "</think>", "Four."), start=1
         ):
@@ -2027,6 +2033,7 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
         "model": "qwen3.5-27b-8bit",
         "messages": [{"role": "user", "content": "What is 2 + 2?"}],
         "enable_thinking": True,
+        "reasoning_max_tokens": 23,
         "stream": stream,
     }
 
@@ -2039,6 +2046,8 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
         message = response.json()["choices"][0]["message"]
         assert message["reasoning_content"] == "Need one addition."
         assert message["content"] == "Four."
+        assert generation_calls[-1]["enable_thinking"] is True
+        assert generation_calls[-1]["thinking_budget"] == 23
         return
 
     with TestClient(app).stream(
@@ -2059,6 +2068,8 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
     )
     assert "".join(delta.get("content", "") for delta in deltas) == "Four."
     assert "<think>" not in body
+    assert generation_calls[-1]["enable_thinking"] is True
+    assert generation_calls[-1]["thinking_budget"] == 23
 
 
 @_skip_without_mlx_vlm

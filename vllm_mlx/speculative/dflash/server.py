@@ -1029,6 +1029,17 @@ def _build_app(
                     top_p=top_p,
                 )
 
+            # Keep the generator's thinking state in lock-step with the chat
+            # template and response postprocessor. mlx-vlm uses this flag to
+            # initialise its thinking-aware stopping policy; omitting it can
+            # let a reasoning trace consume the entire completion budget even
+            # though the prompt opened a thinking block. The public Rapid API
+            # names the per-request cap ``reasoning_max_tokens`` while
+            # mlx-vlm calls the generation kwarg ``thinking_budget``.
+            gen_kwargs["enable_thinking"] = effective_thinking
+            if request.reasoning_max_tokens is not None:
+                gen_kwargs["thinking_budget"] = request.reasoning_max_tokens
+
             # Pass the REMAINING budget (post-render) to the completion helper,
             # not the original timeout, so the single absolute deadline
             # established above spans render + generation. ``0`` keeps its "no
