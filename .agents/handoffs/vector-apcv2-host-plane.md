@@ -4,7 +4,7 @@
 - Receiving role: Atlas
 - Host: Studio (M3 Ultra, 256 GB)
 - Branch: `vector/apcv2-segments`
-- PR: pending
+- PR: `#3446`
 
 ## Verified facts
 
@@ -12,14 +12,17 @@
   between `BatchedEngine` and the text `Scheduler`.
 - The tokenizer remains on the existing MLX worker thread; no long-prompt work
   moved onto the asyncio event loop.
-- Cache limits are 64 entries / 64 MiB, unload clears it, and
+- Cache limits are 64 entries / 64 MiB; manual prefix-cache clear and unload
+  clear it, and
   `RAPID_MLX_PROMPT_HOST_CACHE=0` is a rollback switch.
 - A cached Qwen3 tokenizer benchmark measured 18.67x to 30.67x lower repeated
   host preparation latency across 719 to 21,708 prompt tokens with exact
   string/token equality.
 - The generic device-side B1-to-B2 broadcast idea was rejected: at 65,536
   tokens it ran at 0.46x physical-B2 speed and allocated 134.8 MB over baseline.
-- Focused engine/scheduler/template tests pass. Full PR validation remains.
+- Focused engine/server/scheduler/template tests pass (437/437). The full suite
+  reached 24,333 passes; its 17 optional-dependency failures reproduce exactly
+  on clean `origin/main` with the same interpreter. Full PR validation remains.
 
 ## Risks and unresolved questions
 
