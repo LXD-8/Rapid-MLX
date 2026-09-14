@@ -1262,3 +1262,10 @@ class TestGlm5Parser:
         )
         assert reasoning is None
         assert content == "plain answer"
+
+    def test_prompt_primed_truncated_output_stays_in_reasoning(self, parser):
+        reasoning, content = parser.extract_reasoning(
+            "unfinished private thought", prompt_thinking_active=True
+        )
+        assert reasoning == "unfinished private thought"
+        assert content is None
