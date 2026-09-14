@@ -105,7 +105,7 @@ def _persisted_call_data(call: AgentToolCall) -> dict[str, JsonValue]:
     return {
         "id": call.id,
         "name": call.name,
-        "argument_names": sorted(call.arguments),
+        "argument_names": cast(JsonValue, sorted(call.arguments)),
     }
 
 
@@ -226,8 +226,11 @@ class AgentRuntime:
             "model.requested",
             {
                 "model_turn": run.model_turns,
-                "visible_tools": names,
-                "tools": [tool.model_dump(mode="json") for tool in visible],
+                "visible_tools": cast(JsonValue, names),
+                "tools": cast(
+                    JsonValue,
+                    [tool.model_dump(mode="json") for tool in visible],
+                ),
                 "final_synthesis": final_synthesis,
             },
             now=self._clock(),
