@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
 from vllm_mlx.engine import batched
 from vllm_mlx.prompt_host_cache import PromptHostCache
-from vllm_mlx.scheduler import Scheduler
 
 
 class _Tokenizer:
@@ -49,7 +50,10 @@ def test_render_cache_is_exact_and_preserves_mapping_order(monkeypatch):
     assert engine._prompt_host_cache.stats()["hits_by_kind"]["render"] == 1
 
 
+@pytest.mark.requires_mlx
 def test_token_cache_runs_at_scheduler_boundary_and_returns_a_copy():
+    from vllm_mlx.scheduler import Scheduler
+
     tokenizer = _Tokenizer()
     cache = PromptHostCache(max_entries=8, max_bytes=4096, enabled=True)
     scheduler = Scheduler.__new__(Scheduler)
