@@ -98,6 +98,26 @@ def test_non_json_tool_parameters_raise_a_validation_error():
         ToolSpec(name="broken", risk=ToolRisk.READ_ONLY, parameters={"x": object()})
 
 
+@pytest.mark.parametrize("parameters_json", ["not-json", "[]"])
+def test_tool_parameters_json_requires_an_object(parameters_json):
+    with pytest.raises(ValidationError):
+        ToolSpec(
+            name="broken",
+            risk=ToolRisk.READ_ONLY,
+            parameters_json=parameters_json,
+        )
+
+
+def test_tool_parameters_rejects_both_wire_shapes():
+    with pytest.raises(ValidationError, match="must not contain both"):
+        ToolSpec(
+            name="broken",
+            risk=ToolRisk.READ_ONLY,
+            parameters={},
+            parameters_json="{}",
+        )
+
+
 def test_non_json_event_data_raise_a_validation_error():
     with pytest.raises(ValidationError, match="JSON serializable"):
         AgentEvent(
@@ -105,6 +125,28 @@ def test_non_json_event_data_raise_a_validation_error():
             type="run.created",
             created_at=1,
             data={"x": object()},
+        )
+
+
+@pytest.mark.parametrize("payload_json", ["not-json", "[]"])
+def test_event_payload_json_requires_an_object(payload_json):
+    with pytest.raises(ValidationError):
+        AgentEvent(
+            sequence=1,
+            type="run.created",
+            created_at=1,
+            payload_json=payload_json,
+        )
+
+
+def test_event_rejects_both_wire_shapes():
+    with pytest.raises(ValidationError, match="must not contain both"):
+        AgentEvent(
+            sequence=1,
+            type="run.created",
+            created_at=1,
+            data={},
+            payload_json="{}",
         )
 
 
@@ -192,6 +234,16 @@ def test_minicpm_rejects_an_oversized_tool_surface():
 
     assert run.status is AgentRunStatus.READY
     assert run.model_turns == 0
+
+
+def test_visible_tool_names_must_be_unique():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
+
+    with pytest.raises(AgentRuntimeError, match="must be unique"):
+        runtime.request_model(run, [READ, READ])
+
+    assert run.status is AgentRunStatus.READY
 
 
 def test_profile_override_cannot_weaken_model_limits():
@@ -347,6 +399,22 @@ def test_external_call_is_released_only_after_exact_approval():
     assert approved is not None
     assert approved.call is not None
     assert approved.call.arguments == {"text": "Ready"}
+
+
+def test_approval_fails_closed_if_transient_payload_is_unavailable():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send")
+    runtime.request_model(run, [SEND])
+    runtime.accept_model_turn(
+        run,
+        AgentModelTurn(tool_calls=[AgentToolCall(id="send-1", name="send_message")]),
+    )
+    runtime._call_counts_by_run[id(run)][1].pending_side_effect_call = None
+
+    with pytest.raises(AgentRuntimeError, match="payload is unavailable"):
+        runtime.resolve_approval(run, call_id="send-1", approved=True)
+
+    assert run.status is AgentRunStatus.AWAITING_APPROVAL
 
 
 def test_concurrent_approvals_release_an_external_call_only_once():
@@ -617,6 +685,18 @@ def test_tool_budget_reserves_a_tools_disabled_final_synthesis():
     assert run.failure_code == "tool_call_during_final_synthesis"
 
 
+def test_empty_model_turn_fails_closed():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Answer")
+    runtime.request_model(run, [])
+
+    output = runtime.accept_model_turn(run, AgentModelTurn(content="   "))
+
+    assert output is None
+    assert run.status is AgentRunStatus.FAILED
+    assert run.failure_code == "empty_model_turn"
+
+
 def test_parallel_calls_fail_instead_of_being_partially_executed():
     runtime = _runtime()
     run = runtime.create_run(model="qwen3.5-4b-4bit", goal="Read two files")
@@ -659,6 +739,22 @@ def test_transition_rejects_a_run_not_created_by_runtime():
 
     with pytest.raises(AgentRuntimeError, match="not owned by this AgentRuntime"):
         _runtime().cancel(run)
+
+
+def test_defensive_pending_call_guards_reject_inconsistent_state():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Read")
+
+    with pytest.raises(AgentRuntimeError, match="no pending tool call"):
+        runtime._pending_call(run)
+
+    object.__setattr__(
+        run,
+        "pending_call",
+        AgentToolCall(id="unexpected", name="read_file"),
+    )
+    with pytest.raises(AgentRuntimeError, match="still has a pending tool call"):
+        runtime.request_model(run, [READ])
 
 
 def test_event_history_and_payload_are_immutable_to_consumers():
