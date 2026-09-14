@@ -35,6 +35,7 @@ _service: AgentServerService | None = None
 _service_lock = RLock()
 _service_shutting_down = False
 _METADATA_UNSET = object()
+_single_model_metadata_cache: tuple[object, str, dict | None] | None = None
 
 
 def get_agent_service() -> AgentServerService:
@@ -66,11 +67,12 @@ async def close_agent_service() -> None:
 def start_agent_service_lifecycle() -> None:
     """Explicitly open the singleton gate for a new FastAPI lifespan."""
 
-    global _service_shutting_down
+    global _service_shutting_down, _single_model_metadata_cache
     with _service_lock:
         if _service is not None:
             raise RuntimeError("agent service survived the previous lifespan")
         _service_shutting_down = False
+        _single_model_metadata_cache = None
 
 
 async def _entry_model_config(entry) -> dict | None:
@@ -82,6 +84,21 @@ async def _entry_model_config(entry) -> dict | None:
     metadata = await asyncio.to_thread(read_model_metadata, entry.model_path)
     config = metadata.config if metadata is not None else None
     entry._agent_profile_model_config = config
+    return config
+
+
+async def _single_model_config(generation: object, path: str) -> dict | None:
+    """Cache profile metadata for one concrete single-engine generation."""
+
+    global _single_model_metadata_cache
+    with _service_lock:
+        cached = _single_model_metadata_cache
+        if cached is not None and cached[0] is generation and cached[1] == path:
+            return cached[2]
+    metadata = await asyncio.to_thread(read_model_metadata, path)
+    config = metadata.config if metadata is not None else None
+    with _service_lock:
+        _single_model_metadata_cache = (generation, path, config)
     return config
 
 
@@ -120,8 +137,7 @@ async def create_agent_run(request: AgentRunCreateRequest) -> AgentRunView:
         profile_tool_call_parser = entry.tool_call_parser
         model_generation = entry
     elif cfg.model_path:
-        metadata = await asyncio.to_thread(read_model_metadata, cfg.model_path)
-        profile_model_config = metadata.config if metadata is not None else None
+        profile_model_config = await _single_model_config(cfg.engine, cfg.model_path)
     try:
         return await get_agent_service().create(
             request,

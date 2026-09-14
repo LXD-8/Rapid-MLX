@@ -243,7 +243,14 @@ class MCPToolRegistry:
         except Exception:
             # Audit sinks are outside Rapid's trust boundary. Their exception
             # text and traceback may echo payload values, so log neither.
-            logger.error("Failed to write MCP execution audit record")
+            identity = "__".join(str(value) for value in args[:2])
+            fingerprint = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+            logger.error(
+                "AUDIT_FALLBACK mcp_execution identity_sha256=%s success=%s error=%s",
+                fingerprint,
+                kwargs.get("success"),
+                kwargs.get("error_message") or "none",
+            )
             return False
         return True
 

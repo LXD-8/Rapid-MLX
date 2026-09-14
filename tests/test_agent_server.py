@@ -988,7 +988,8 @@ async def test_mcp_audit_failure_never_rewrites_committed_tool_outcome(caplog):
     assert result.safe_summary == (
         "Tool execution completed, but its MCP audit record could not be written."
     )
-    assert "Failed to write MCP execution audit record" in caplog.text
+    assert "AUDIT_FALLBACK mcp_execution" in caplog.text
+    assert "identity_sha256=" in caplog.text
     assert "secret-token-123" not in caplog.text
     reset_config()
 

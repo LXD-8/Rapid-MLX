@@ -414,6 +414,33 @@ def test_agent_create_qualifies_custom_local_minicpm_from_metadata(monkeypatch):
     reset_config()
 
 
+@pytest.mark.asyncio
+async def test_single_model_metadata_is_cached_per_engine_generation(monkeypatch):
+    from types import SimpleNamespace
+
+    reads = []
+
+    def read(path):
+        reads.append(path)
+        return SimpleNamespace(config={"model_type": "llama"})
+
+    monkeypatch.setattr(agent_routes, "read_model_metadata", read)
+    monkeypatch.setattr(agent_routes, "_single_model_metadata_cache", None)
+    first_engine = object()
+    second_engine = object()
+
+    assert await agent_routes._single_model_config(first_engine, "/model") == {
+        "model_type": "llama"
+    }
+    assert await agent_routes._single_model_config(first_engine, "/model") == {
+        "model_type": "llama"
+    }
+    assert await agent_routes._single_model_config(second_engine, "/model") == {
+        "model_type": "llama"
+    }
+    assert reads == ["/model", "/model"]
+
+
 def test_agent_http_surface_maps_success_and_stable_failures(monkeypatch):
     cfg = reset_config()
     cfg.model_name = "known"
