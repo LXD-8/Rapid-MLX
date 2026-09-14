@@ -145,9 +145,7 @@ ChatTurnDriver = Callable[
 ]
 
 
-def classify_mcp_tool(
-    name: str, *, declared_read_only: Sequence[str] = ()
-) -> ToolRisk:
+def classify_mcp_tool(name: str, *, declared_read_only: Sequence[str] = ()) -> ToolRisk:
     """Trust only an exact operator declaration; unknown tools need approval."""
 
     return (
@@ -313,8 +311,7 @@ class MCPToolRegistry:
             content = json.dumps(result.content, ensure_ascii=False, default=str)
         if len(content) > _MAX_TOOL_RESULT_CHARS:
             content = (
-                content[:_MAX_TOOL_RESULT_CHARS]
-                + "\n[tool result truncated by Rapid]"
+                content[:_MAX_TOOL_RESULT_CHARS] + "\n[tool result truncated by Rapid]"
             )
         return AgentToolResult(
             call_id=call.id,
@@ -371,9 +368,7 @@ async def generate_chat_turn(
     )
     response = await create_chat_completion(request, _InternalRequest())  # type: ignore[arg-type]
     if response.status_code != 200 or not getattr(response, "body", None):
-        raise AgentServerError(
-            "chat generation did not return a successful response"
-        )
+        raise AgentServerError("chat generation did not return a successful response")
     decoded = ChatCompletionResponse.model_validate_json(response.body)
     if len(decoded.choices) != 1:
         raise AgentServerError("chat generation returned an invalid choice count")
@@ -467,9 +462,7 @@ class AgentServerService:
         snapshot = getattr(self._registry, "snapshot", None)
         run_registry = snapshot() if callable(snapshot) else self._registry
         tools = self._select_tools(request.tool_names, profile, run_registry)
-        run = self._runtime.create_run(
-            model=model, goal=request.goal, profile=profile
-        )
+        run = self._runtime.create_run(model=model, goal=request.goal, profile=profile)
         entry = _ServerRun(
             run=run,
             request_model=request_model or model,
@@ -521,9 +514,7 @@ class AgentServerService:
             ),
         )
 
-    async def approve(
-        self, run_id: str, request: AgentApprovalRequest
-    ) -> AgentRunView:
+    async def approve(self, run_id: str, request: AgentApprovalRequest) -> AgentRunView:
         entry = self._entry(run_id)
         async with entry.lock:
             if entry.cancel_requested:
@@ -601,6 +592,8 @@ class AgentServerService:
             except asyncio.CancelledError:
                 pass
         async with entry.lock:
+            if entry.run.status in _TERMINAL_STATUSES:
+                return self._view(entry)
             self._runtime.cancel(entry.run)
             entry.pending_action = None
             self._mark_terminal(entry)
@@ -613,11 +606,7 @@ class AgentServerService:
         for entry in entries:
             entry.cancel_requested = True
             task = entry.task
-            if (
-                task is not None
-                and not task.done()
-                and not entry.tool_in_flight
-            ):
+            if task is not None and not task.done() and not entry.tool_in_flight:
                 task.cancel()
         for entry in entries:
             task = entry.task
@@ -668,9 +657,7 @@ class AgentServerService:
             self._prune_locked()
             entry = self._runs.get(run_id)
         if entry is None:
-            raise AgentRunNotFoundError(
-                "agent run was not found or has expired"
-            )
+            raise AgentRunNotFoundError("agent run was not found or has expired")
         return entry
 
     def _prune_locked(self) -> None:
@@ -765,9 +752,7 @@ class AgentServerService:
         finally:
             entry.tool_in_flight = False
 
-    def _append_assistant_turn(
-        self, entry: _ServerRun, turn: AgentModelTurn
-    ) -> None:
+    def _append_assistant_turn(self, entry: _ServerRun, turn: AgentModelTurn) -> None:
         message: dict[str, Any] = {
             "role": "assistant",
             "content": turn.content or None,
@@ -779,9 +764,7 @@ class AgentServerService:
                     "type": "function",
                     "function": {
                         "name": call.name,
-                        "arguments": json.dumps(
-                            call.arguments, ensure_ascii=False
-                        ),
+                        "arguments": json.dumps(call.arguments, ensure_ascii=False),
                     },
                 }
                 for call in turn.tool_calls
@@ -793,9 +776,8 @@ class AgentServerService:
     ) -> None:
         content = result.content
         if entry.run.profile.attach_ledger_to_tool_results:
-            content += (
-                "\n\n[Rapid task state]\n"
-                + self._runtime.ledger_context(entry.run)
+            content += "\n\n[Rapid task state]\n" + self._runtime.ledger_context(
+                entry.run
             )
         entry.messages.append(
             {
@@ -807,9 +789,7 @@ class AgentServerService:
 
     def _view(self, entry: _ServerRun) -> AgentRunView:
         pending = entry.pending_action
-        approval_required = (
-            entry.run.status is AgentRunStatus.AWAITING_APPROVAL
-        )
+        approval_required = entry.run.status is AgentRunStatus.AWAITING_APPROVAL
         release_arguments = (
             entry.settings.execution == "client" and not approval_required
         )

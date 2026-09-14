@@ -930,6 +930,4 @@ class TestAgentReadOnlyToolsConfig:
         from vllm_mlx.mcp.types import MCPConfig
 
         with pytest.raises(ValueError, match="agent_read_only_tools"):
-            MCPConfig.from_dict(
-                {"servers": {}, "agent_read_only_tools": value}
-            )
+            MCPConfig.from_dict({"servers": {}, "agent_read_only_tools": value})

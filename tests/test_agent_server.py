@@ -253,9 +253,7 @@ async def test_client_side_effect_requires_approval_before_result():
     driver = ScriptedDriver(
         AgentModelTurn(tool_calls=[call]), AgentModelTurn(content="Client sent it.")
     )
-    service = AgentServerService(
-        registry=FakeRegistry((SEND,)), chat_driver=driver
-    )
+    service = AgentServerService(registry=FakeRegistry((SEND,)), chat_driver=driver)
     created = await service.create(
         AgentRunCreateRequest(goal="Send", execution="client"),
         model="minicpm5-2b-4bit",
@@ -387,10 +385,42 @@ async def test_cancel_aborts_inflight_generation_and_close_is_idempotent():
     await started.wait()
 
     cancelled = await service.cancel(created.id)
+    cancelled_again = await service.cancel(created.id)
     await service.close()
     await service.close()
 
     assert cancelled.status is AgentRunStatus.CANCELLED
+    assert cancelled_again.status is AgentRunStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_existing_terminal_outcome_without_500():
+    service = AgentServerService(
+        registry=FakeRegistry(()),
+        chat_driver=ScriptedDriver(AgentModelTurn(content="done")),
+    )
+    created = await service.create(AgentRunCreateRequest(goal="finish"), model="model")
+    completed = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    after_cancel = await service.cancel(created.id)
+
+    assert after_cancel.status is AgentRunStatus.COMPLETED
+    assert after_cancel.output == completed.output == "done"
+
+    async def broken_driver(*_args):
+        raise RuntimeError("failure")
+
+    failed_service = AgentServerService(
+        registry=FakeRegistry(()), chat_driver=broken_driver
+    )
+    failed_created = await failed_service.create(
+        AgentRunCreateRequest(goal="fail"), model="model"
+    )
+    failed = await wait_for_status(
+        failed_service, failed_created.id, AgentRunStatus.FAILED
+    )
+    failed_after_cancel = await failed_service.cancel(failed.id)
+    assert failed_after_cancel.status is AgentRunStatus.FAILED
 
 
 @pytest.mark.asyncio
@@ -496,9 +526,7 @@ def test_tool_selection_is_exact_bounded_and_read_first_by_default():
         ("mail__send_message", ["other__send_message"], ToolRisk.EXTERNAL_SIDE_EFFECT),
     ],
 )
-def test_mcp_risk_classifier_requires_exact_operator_declaration(
-    name, declared, risk
-):
+def test_mcp_risk_classifier_requires_exact_operator_declaration(name, declared, risk):
     assert classify_mcp_tool(name, declared_read_only=declared) is risk
 
 
@@ -617,9 +645,7 @@ async def test_mcp_execution_preserves_sandbox_and_audit():
     cfg = reset_config()
     cfg.mcp_manager = Manager()
     cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
-    call = AgentToolCall(
-        id="call", name="files__read_file", arguments={"path": "x"}
-    )
+    call = AgentToolCall(id="call", name="files__read_file", arguments={"path": "x"})
 
     result = await MCPToolRegistry().execute(call)
 
@@ -668,9 +694,7 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
 
     cfg.mcp_manager = Manager("reloaded")
     cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
-    await snapshot.execute(
-        AgentToolCall(id="call", name="same__tool", arguments={})
-    )
+    await snapshot.execute(AgentToolCall(id="call", name="same__tool", arguments={}))
 
     assert calls == ["advertised"]
     reset_config()
@@ -701,9 +725,7 @@ async def test_run_never_switches_to_replacement_model_generation():
         if len(seen_engines) == 1:
             return AgentModelTurn(
                 tool_calls=[
-                    AgentToolCall(
-                        id="call", name=READ.name, arguments={"path": "x"}
-                    )
+                    AgentToolCall(id="call", name=READ.name, arguments={"path": "x"})
                 ]
             )
         return AgentModelTurn(content="done")
@@ -715,9 +737,7 @@ async def test_run_never_switches_to_replacement_model_generation():
         request_model="served",
         model_generation=first,
     )
-    await wait_for_status(
-        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
-    )
+    await wait_for_status(service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT)
 
     registry.remove("canonical")
     registry.add(
@@ -887,9 +907,7 @@ async def test_close_cancels_active_work_and_rejects_new_runs():
         started.set()
         await asyncio.Future()
 
-    service = AgentServerService(
-        registry=FakeRegistry(()), chat_driver=blocked_driver
-    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=blocked_driver)
     created = await service.create(AgentRunCreateRequest(goal="wait"), model="model")
     await started.wait()
 
@@ -908,9 +926,7 @@ async def test_schedule_rejects_parallel_driver_for_same_run():
         await blocker.wait()
         return AgentModelTurn(content="done")
 
-    service = AgentServerService(
-        registry=FakeRegistry(()), chat_driver=blocked_driver
-    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=blocked_driver)
     created = await service.create(AgentRunCreateRequest(goal="wait"), model="model")
     entry = service._entry(created.id)
 

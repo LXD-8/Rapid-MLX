@@ -275,9 +275,7 @@ def test_agent_create_rejects_unknown_model_before_starting_background_work(
     app.include_router(agent_routes.router)
 
     with TestClient(app) as client:
-        response = client.post(
-            "/v1/agent/runs", json={"goal": "x", "model": "unknown"}
-        )
+        response = client.post("/v1/agent/runs", json={"goal": "x", "model": "unknown"})
 
     assert response.status_code == 404
     assert service.created == []
@@ -428,8 +426,12 @@ def test_agent_http_surface_maps_success_and_stable_failures(monkeypatch):
         assert client.post("/v1/agent/runs/run-1/cancel").status_code == 200
         assert client.post("/v1/agent/runs/missing/cancel").status_code == 404
 
-        assert client.post("/v1/agent/runs", json={"goal": "capacity"}).status_code == 503
-        assert client.post("/v1/agent/runs", json={"goal": "bad tools"}).status_code == 422
+        assert (
+            client.post("/v1/agent/runs", json={"goal": "capacity"}).status_code == 503
+        )
+        assert (
+            client.post("/v1/agent/runs", json={"goal": "bad tools"}).status_code == 422
+        )
 
     reset_config()
 
