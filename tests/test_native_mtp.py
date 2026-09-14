@@ -86,6 +86,17 @@ def test_native_mtp_rejects_sampling_penalties(penalty: dict[str, float]) -> Non
     assert exc_info.value.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [("logprobs", True), ("top_logprobs", 2)],
+)
+def test_native_mtp_rejects_logprobs(field: str, value: object) -> None:
+    request = SimpleNamespace(temperature=0, **{field: value})
+    with pytest.raises(HTTPException, match="logprobs") as exc_info:
+        _validate_greedy_request(request)
+    assert exc_info.value.status_code == 400
+
+
 def test_native_mtp_runtime_probe_is_exact_version(monkeypatch) -> None:
     from vllm_mlx.speculative.native_mtp import runtime
 
@@ -189,6 +200,27 @@ def test_load_native_mtp_runtime_validates_architecture_and_block(monkeypatch) -
             block_size=3,
         )
 
+
+def test_glm_runtime_fails_before_resolving_sidecar(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    drafter = SimpleNamespace(
+        config=SimpleNamespace(model_type="glm5_next_mtp", block_size=2)
+    )
+    _fake_mlx_vlm_modules(monkeypatch, drafter)
+    monkeypatch.setattr(runtime, "have_glm_cache_runtime", lambda: False)
+    sys.modules["mlx_vlm.utils"].get_model_path = lambda *_args, **_kwargs: (
+        _ for _ in ()
+    ).throw(AssertionError("must not resolve or download sidecar"))
+
+    with pytest.raises(RuntimeError, match="cache-owned GLM runtime"):
+        runtime.load_runtime(
+            "org/glm-drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+            block_size=2,
+            expected_model_type="glm5_next_mtp",
+        )
 
 def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
     from vllm_mlx import cli
