@@ -92,10 +92,10 @@ one authorization label after review and PR validation have converged:
 The managed queue never mixes the two labels. Each ready pull request forms a
 singleton candidate without a batching fill wait and starts when queue capacity
 is available.
-The two classes are independent scheduling scopes: one no-Mac candidate may
-validate while one Mac candidate is running, but the `mac-required` scope has
-capacity one, so scarce
-macOS work never multiplies. The global speculative-check ceiling is two.
+The two classes use independent queue rules in serial mode. One singleton
+candidate validates at a time because parallel mode depends on
+subscription-gated queue scopes. Jobs inside a Mac candidate can still use both
+provisioned macOS slots concurrently.
 
 The Linux `changes` classifier publishes exactly one successful lane marker per
 head: `merge-lane-no-mac` for the false/false state, or `merge-lane-mac` for the
@@ -157,12 +157,10 @@ The queue contract lives in `.mergify.yml`:
   does not reset terminal queue state and must not be used as a substitute;
 - an exact-head authorization status in both queue conditions, preventing a
   newly pushed head from racing asynchronous label revocation;
-- parallel mode with a global ceiling of two and a `mac-required` scope capacity
-  of one, so no-Mac work can pass a slow Mac candidate without multiplying scarce
-  macOS capacity;
-- documentation-only changes carry no scope; any non-documentation file assigns
-  `mac-required`, matching the label policy's fail-closed boundary. Queue and CI
-  routing files are global barriers and serialize the train while policy changes;
+- serial singleton mode, avoiding subscription-gated scopes while allowing the
+  jobs inside one candidate to use both provisioned macOS slots;
+- no subscription-gated batch or scope configuration; lane safety comes from
+  mutually exclusive queue rules and the diff-derived lane marker;
 - separate no-Mac and Mac-required queues, each with mutually exclusive
   authorization labels;
 - singleton candidates require no batch feature or fill wait and start when
@@ -246,9 +244,9 @@ repository permission.
    `merge-ready` and verify a temporary singleton candidate forms without a fill
    wait, runs each affected full lane once when capacity is available, reports
    all three required checks, and squash-merges the original.
-7. Run one `merge-ready` candidate beside one `merge-ready-mac` candidate.
-   Verify both temporary candidates become active, no more than two total checks
-   run, and no more than one candidate carrying `mac-required` runs at once.
+7. Queue one `merge-ready` candidate and one `merge-ready-mac` candidate.
+   Verify only one temporary candidate is active at a time and the second starts
+   after the first settles.
 8. Confirm a fork branch named like a queue branch does not receive promoted
    lanes. Then remove the applicable ready label from a queued test PR and
    verify it leaves the queue without merging.
