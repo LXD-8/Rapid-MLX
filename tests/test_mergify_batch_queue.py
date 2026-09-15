@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Fail-closed contracts for the managed batch merge queue."""
+"""Fail-closed contracts for the managed singleton merge queue."""
 
 import json
 import subprocess
@@ -31,7 +31,7 @@ def _rules_by_name(kind: str) -> dict[str, dict[str, object]]:
     return {rule["name"]: rule for rule in _config()[kind]}
 
 
-def test_queue_batches_four_ready_prs_after_a_bounded_wait():
+def test_queue_runs_single_ready_prs_without_batch_features_or_fill_waits():
     config = _config()
     queue = config["merge_queue"]
     rules = _rules_by_name("queue_rules")
@@ -40,14 +40,14 @@ def test_queue_batches_four_ready_prs_after_a_bounded_wait():
     assert queue["max_parallel_checks"] == 2
     assert queue["skip_intermediate_results"] is False
     assert set(rules) == {"no-mac-batch", "mac-batch"}
-    assert rules["no-mac-batch"]["batch_size"] == 4
-    assert rules["no-mac-batch"]["batch_max_wait_time"] == "5 min"
-    assert rules["mac-batch"]["batch_size"] == 4
-    assert rules["mac-batch"]["batch_max_wait_time"] == "15 min"
+    for rule in rules.values():
+        assert "batch_size" not in rule
+        assert "batch_max_wait_time" not in rule
+        assert "batch_max_failure_resolution_attempts" not in rule
     assert {rule["checks_timeout"] for rule in rules.values()} == {"90 min"}
 
 
-def test_no_mac_and_mac_batches_have_independent_bounded_scopes():
+def test_no_mac_and_mac_candidates_have_independent_bounded_scopes():
     scopes = _config()["scopes"]
     files = scopes["source"]["files"]["mac-required"]
 
@@ -71,7 +71,7 @@ def test_queue_policy_changes_are_global_barriers():
     }
 
 
-def test_queue_revalidates_every_required_check_on_the_combined_batch():
+def test_queue_revalidates_every_required_check_on_the_candidate():
     rules = _rules_by_name("queue_rules")
 
     for name, rule in rules.items():
@@ -104,7 +104,6 @@ def test_ready_labels_autoqueue_without_unsupported_recovery_rules():
         assert expected_labels[name] <= set(queue_rule["queue_conditions"])
         assert "-from-fork" in queue_rule["queue_conditions"]
         assert queue_rule["max_checks_retries"] == 0
-        assert queue_rule["batch_max_failure_resolution_attempts"] == 2
 
 
 def test_ready_labels_are_mutually_exclusive_in_every_rule():
@@ -116,7 +115,7 @@ def test_ready_labels_are_mutually_exclusive_in_every_rule():
         } <= conditions
 
 
-def test_release_bumps_cannot_enter_the_general_batch_queue():
+def test_release_bumps_cannot_enter_the_general_merge_queue():
     config = _config()
     exclusions = {
         "-label = version-bump",
