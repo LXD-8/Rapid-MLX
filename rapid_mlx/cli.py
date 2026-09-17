@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import atexit
 import os
 import shlex
 import sys
@@ -501,6 +502,111 @@ def _run_uvicorn(app, args, log_level: str) -> None:
         raise
 
 
+def _hard_exit_after_serve() -> None:
+    """Terminate the ``serve`` process without interpreter finalization.
+
+    Issue #3495: on macOS the graceful-shutdown path that lets
+    ``uvicorn.run`` return flows straight into CPython interpreter
+    finalization (``Py_FinalizeEx``) — module teardown, ``atexit``, GC of
+    every object. Native worker threads spawned by our native deps (the
+    rayon pool inside ``tokenizers``/``llguidance``, MLX/Metal internal
+    threads) do NOT participate in that teardown: on some macOS dyld
+    versions the TLS finalization pass then dereferences pool state the
+    interpreter has already freed, and the process dies with SIGSEGV
+    *after* a fully clean shutdown ("Python quit unexpectedly" crash
+    dialog on every Ctrl+C).
+
+    Which paths reach finalization depends on the uvicorn version
+    (pyproject floor is ``>=0.23``; uvicorn >=0.34 re-raises every
+    captured signal after the graceful shutdown). Empirically, on the
+    real serve process with uvicorn 0.53:
+
+      * SIGTERM → uvicorn re-raises it after graceful shutdown and the
+        process dies by signal (exit 143) — no interpreter finalization,
+        no crash, helper never runs;
+      * SIGINT (Ctrl+C) → ``uvicorn.run`` RETURNS and the pre-fix process
+        walked into finalization — exactly the #3495 crash path this
+        helper closes;
+      * uvicorn <0.34 returns for both signals → both paths flow through
+        here.
+
+    ``os._exit`` skips interpreter finalization altogether: the kernel
+    tears down every thread atomically, so the race window cannot open.
+
+    ``os._exit`` also skips the atexit pass, and that inventory is
+    load-bearing, not best-effort: the telemetry queue drain +
+    ``session_end`` hook (``telemetry/queue.py`` and the CLI session
+    atexit), the vision media tempfile reaper
+    (``models/mllm.py::TempFileManager``), the ephemeral video job-store
+    rmtree (``routes/video.py``), and the opt-in ``RAPID_PYSAMPLE``
+    report. So the atexit pass is run EXPLICITLY right before exiting —
+    same hooks, same LIFO order, while the process state is still fully
+    intact. Everything that must be persisted by the graceful shutdown
+    itself (prefix cache, memory cache) is already flushed by the
+    FastAPI lifespan shutdown handler BEFORE ``uvicorn.run`` returns.
+
+    Only the SUCCESS path calls this. Bind failures and other
+    ``SystemExit``/exception paths keep their normal propagation so
+    supervisors can detect a failed boot.
+
+    In-process test harnesses (pytest suites drive ``serve_command``
+    through to ``uvicorn.run`` with everything stubbed) must NOT
+    terminate the pytest process here, so the exit is skipped when BOTH
+    ``pytest`` is imported in THIS process AND the pytest-owned
+    ``PYTEST_CURRENT_TEST`` env var is set. Requiring both signals
+    keeps the two false-positive shapes on the production path:
+
+      * a REAL ``rapid-mlx serve`` subprocess spawned by a pytest suite
+        inherits ``PYTEST_CURRENT_TEST`` but never imports ``pytest`` —
+        it must hard-exit (it is exactly the process the macOS 15 fix
+        protects);
+      * an embedded/instrumented server that happens to import
+        ``pytest`` (profiler plugin, debug REPL) without pytest driving
+        the process — it must hard-exit too.
+
+    The explicit per-suite stubs of this helper remain the primary
+    defense; this is the safety net for the suite that forgets one (an
+    ``os._exit(0)`` mid-suite would end the run with a green exit code
+    while silently skipping every test after it).
+    """
+    if "pytest" in sys.modules and os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    # Run the atexit pass explicitly — os._exit would otherwise skip it
+    # (see docstring: the hooks are load-bearing). Registered hooks are
+    # idempotent and budgeted (telemetry drain caps its join; the
+    # reapers are rmtree/unlink passes). ``_run_exitfuncs`` is a private
+    # CPython API, but it is the exact pass interpreter finalization
+    # would run and has been stable across every CPython release that
+    # ships this project's floor; the BaseException guard below makes
+    # the failure mode of that assumption changing safe (skip the
+    # hooks, still hard-exit — the pre-#3495 crash window stays closed).
+    # Catch BaseException, not Exception: a hook re-raising SystemExit
+    # or KeyboardInterrupt must not skip the os._exit below, or the
+    # process falls back into the exact interpreter-finalization crash
+    # path this helper exists to prevent (codex round-3 BLOCKING).
+    try:
+        atexit._run_exitfuncs()  # noqa: SLF001 — see comment above
+    except BaseException:  # noqa: BLE001 — see comment above
+        pass
+    # Flush failures must not be silently promoted to success: CPython's
+    # own finalization reports a failed stdout/stderr flush as exit
+    # status 120, so mirror that instead of always exiting 0 (codex
+    # round-5 BLOCKING). BaseException, not Exception: a second SIGINT
+    # landing during the flush raises KeyboardInterrupt, which must not
+    # skip the os._exit below and re-enter the interpreter-finalization
+    # crash path (codex round-4 BLOCKING).
+    exit_code = 0
+    try:
+        sys.stdout.flush()
+    except BaseException:  # noqa: BLE001
+        exit_code = 120
+    try:
+        sys.stderr.flush()
+    except BaseException:  # noqa: BLE001
+        exit_code = 120
+    os._exit(exit_code)
+
+
 def _serve_startup_message(args) -> str:
     """Render the pre-bind status without importing the inference stack."""
 
@@ -916,6 +1022,7 @@ def _serve_audio_mode(args, entry) -> None:
     sys.stdout.flush()
 
     _run_uvicorn(app, args, uvicorn_log_level)
+    _hard_exit_after_serve()
 
 
 def _load_embedding_model_or_exit(args, load_fn) -> None:
@@ -5599,6 +5706,7 @@ def serve_command(args):
         _cfg.bind_listen_fd = listen_fd
 
     _run_uvicorn(app, args, uvicorn_log_level)
+    _hard_exit_after_serve()
 
 
 def _run_tier_submit_flow(args) -> int:
