@@ -251,12 +251,12 @@ enum LocalWorkspaceTools {
 
     static let runDefinition = ToolDefinition(
         name: "local_run",
-        description: "Run a development command without a shell, for example clang, cc, go, swift, python3, node, ruby, or a compiled executable inside the user's home directory. Pass arguments separately. working_directory is optional and defaults to ~/Rapid Workspace. The user approves every command; execution times out after at most 30 seconds.",
+        description: "Run a development command without a shell, for example clang, cc, go, swift, python3, node, ruby, or a compiled executable inside the user's home directory. Put the command name in command and its arguments in the argv string array. working_directory is optional and defaults to ~/Rapid Workspace. The user approves every command; execution times out after at most 30 seconds.",
         parameters: .object([
             "type": .string("object"),
             "properties": .object([
                 "command": .object(["type": .string("string"), "description": .string("Allowed command name or absolute path to a local executable.")]),
-                "arguments": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
+                "argv": .object(["type": .string("array"), "items": .object(["type": .string("string")]), "description": .string("Command arguments, one string each.")]),
                 "working_directory": .object(["type": .string("string"), "description": .string("Absolute or ~/ working directory inside the user's home directory. Use ~/Rapid Workspace for generated code when no destination was requested.")]),
                 "cwd": .object(["type": .string("string"), "description": .string("Alias for working_directory.")]),
                 "timeout_seconds": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(30)]),
@@ -286,15 +286,35 @@ enum LocalWorkspaceTools {
     private struct WriteArgs: Decodable { let path: String; let content: String; let overwrite: Bool? }
     private struct RunArgs: Decodable {
         let command: String
-        let arguments: [String]?
+        /// Command arguments. The wire key is `argv`; the pre-0.14.3 key
+        /// `arguments` and the common `args` spelling are still accepted so a
+        /// small model that reaches for either keeps working.
+        let argv: [String]?
         let workingDirectory: String?
         let cwd: String?
         let timeoutSeconds: Int?
 
         enum CodingKeys: String, CodingKey {
-            case command, arguments, cwd
+            case command, argv, arguments, args, cwd
             case workingDirectory = "working_directory"
             case timeoutSeconds = "timeout_seconds"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            command = try container.decode(String.self, forKey: .command)
+            if container.contains(.argv) {
+                argv = try container.decode([String].self, forKey: .argv)
+            } else if container.contains(.arguments) {
+                argv = try container.decode([String].self, forKey: .arguments)
+            } else if container.contains(.args) {
+                argv = try container.decode([String].self, forKey: .args)
+            } else {
+                argv = nil
+            }
+            workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+            timeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
         }
     }
 
@@ -642,6 +662,10 @@ enum LocalWorkspaceTools {
     private struct SearchState {
         let query: String
         let needle: String
+        /// Lower-cased words of the query. A file matches when every word
+        /// appears in its name or its text, so "orchid notes" still finds
+        /// `orchid-notes.txt` and a note whose words are not adjacent.
+        let terms: [String]
         var visitedEntries = 0
         var scannedFiles = 0
         var matches: [[String: String]] = []
@@ -649,11 +673,64 @@ enum LocalWorkspaceTools {
         init(query: String) {
             self.query = query
             needle = query.lowercased()
+            terms = LocalWorkspaceTools.searchTerms(for: query)
         }
 
         var isAtLimit: Bool {
             visitedEntries >= 2_000 || scannedFiles >= 500 || matches.count >= 20
         }
+    }
+
+    /// Lower-cased query words, punctuation stripped, in query order. A query
+    /// that is a single word yields one term, so the exact-phrase path and
+    /// the all-words path agree.
+    static func searchTerms(for query: String) -> [String] {
+        query.lowercased()
+            .split { !($0.isLetter || $0.isNumber) }
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    /// Whole-query substring first (exact phrase), then every query word
+    /// anywhere in the text. Returns the range that anchors the snippet.
+    static func snippetRange(query: String, terms: [String], in text: String) -> Range<String.Index>? {
+        if let exact = text.range(of: query, options: [.caseInsensitive]) { return exact }
+        guard terms.count > 1 else { return nil }
+        var missing = Set(terms)
+        var firstRanges: [String: Range<String.Index>] = [:]
+        var start: String.Index?
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character.isLetter || character.isNumber {
+                if start == nil { start = index }
+            } else if let tokenStart = start {
+                let word = String(text[tokenStart..<index]).lowercased()
+                if missing.remove(word) != nil {
+                    firstRanges[word] = tokenStart..<index
+                    if missing.isEmpty { return firstRanges[terms[0]] }
+                }
+                start = nil
+            }
+            index = text.index(after: index)
+        }
+        if let tokenStart = start {
+            let word = String(text[tokenStart..<text.endIndex]).lowercased()
+            if missing.remove(word) != nil {
+                firstRanges[word] = tokenStart..<text.endIndex
+            }
+        }
+        return missing.isEmpty ? firstRanges[terms[0]] : nil
+    }
+
+    private static func snippetRange(for state: SearchState, in text: String) -> Range<String.Index>? {
+        snippetRange(query: state.query, terms: state.terms, in: text)
+    }
+
+    static func matchesAllTerms(_ terms: [String], in lowercasedText: String) -> Bool {
+        guard terms.count > 1 else { return false }
+        let words = Set(searchTerms(for: lowercasedText))
+        return terms.allSatisfy(words.contains)
     }
 
     /// Walk from the approved directory descriptor rather than reopening its
@@ -708,7 +785,9 @@ enum LocalWorkspaceTools {
                 Darwin.close(child)
             case S_IFREG:
                 state.scannedFiles += 1
-                let filenameMatch = name.lowercased().contains(state.needle)
+                let lowercasedName = name.lowercased()
+                let filenameMatch = lowercasedName.contains(state.needle)
+                    || Self.matchesAllTerms(state.terms, in: lowercasedName)
                 var snippet: String?
                 if metadata.st_size <= 1_000_000 {
                     let file = name.withCString {
@@ -718,7 +797,7 @@ enum LocalWorkspaceTools {
                         defer { Darwin.close(file) }
                         if let data = readData(descriptor: file, limit: 1_000_000),
                            let text = String(data: data, encoding: .utf8),
-                           let range = text.range(of: state.query, options: [.caseInsensitive]) {
+                           let range = Self.snippetRange(for: state, in: text) {
                             let lower = text.index(range.lowerBound, offsetBy: -80, limitedBy: text.startIndex) ?? text.startIndex
                             let upper = text.index(range.upperBound, offsetBy: 160, limitedBy: text.endIndex) ?? text.endIndex
                             snippet = String(text[lower..<upper]).replacingOccurrences(of: "\n", with: " ")
@@ -815,7 +894,7 @@ enum LocalWorkspaceTools {
                 overwrite: args.overwrite == true
             )
             let url = parent.url.appendingPathComponent(approved.filename)
-            return ToolCallResult(toolCallID: "", content: "Wrote \(args.content.utf8.count) bytes to \(url.path)")
+            return ToolCallResult(toolCallID: "", content: "Wrote \(args.content.utf8.count) bytes to \(Self.displayPath(url))")
         } catch { return failure("local_write error: \(error.localizedDescription)") }
     }
 
@@ -1079,7 +1158,7 @@ enum LocalWorkspaceTools {
                 let recoverableURL = trashDirectory.url.appendingPathComponent(destinationName)
                 return failure("local_trash refused because the approved file changed; the replacement remains recoverable at \(recoverableURL.path)")
             }
-            return ToolCallResult(toolCallID: "", content: "Moved \(url.path) to Trash. It can be recovered from Finder.")
+            return ToolCallResult(toolCallID: "", content: "Moved \(Self.displayPath(url)) to Trash. It can be recovered from Finder.")
         } catch { return failure("local_trash error: \(error.localizedDescription)") }
     }
 
@@ -1105,7 +1184,9 @@ enum LocalWorkspaceTools {
             )
         }
 
-        var processArguments = args.arguments ?? []
+        var processArguments = Self.expandingHomeArguments(
+            args.argv ?? [], command: args.command
+        )
         let executable: URL
         let executablePresentedURL: URL?
         let helperClass: HelperClass
@@ -1223,6 +1304,147 @@ enum LocalWorkspaceTools {
     /// loaded into the compiler process itself. Reject indirect argument files,
     /// frontend passthrough, and every supported plugin-loading spelling before
     /// asking the user to approve the command.
+    /// Expand a leading `~/` only for command positions that are filesystem
+    /// operands. `local_run` is argv-based rather than shell-based, so literal
+    /// data passed to a program must remain byte-for-byte unchanged.
+    static func expandingHomeArguments(
+        _ arguments: [String],
+        command: String,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String] {
+        // Resolve symlinks the same way the sandbox profile does.
+        let homePath = canonicalPath(home.standardizedFileURL.path)
+        let commandName = command.split(separator: "/").last.map(String.init) ?? command
+        let pathIndexes: Set<Int>
+        switch commandName {
+        case "clang", "cc", "gcc":
+            let pathOperandOptions: Set<String> = [
+                "-o", "-I", "-F", "-include", "-include-pch",
+                "-isystem", "-iquote", "-iframework",
+            ]
+            let nonPathOperandOptions: Set<String> = ["-D", "-U", "-x", "-std"]
+            var indexes: Set<Int> = []
+            var nextIsPath = false
+            var nextIsLiteral = false
+            var afterTerminator = false
+            for index in arguments.indices {
+                let argument = arguments[index]
+                if nextIsPath {
+                    indexes.insert(index)
+                    nextIsPath = false
+                    continue
+                }
+                if nextIsLiteral {
+                    nextIsLiteral = false
+                    continue
+                }
+                if afterTerminator {
+                    indexes.insert(index)
+                } else if argument == "--" {
+                    afterTerminator = true
+                } else if pathOperandOptions.contains(argument) {
+                    nextIsPath = true
+                } else if nonPathOperandOptions.contains(argument) {
+                    nextIsLiteral = true
+                } else if !argument.hasPrefix("-") {
+                    indexes.insert(index)
+                }
+            }
+            pathIndexes = indexes
+        case "python3", "node", "ruby":
+            let optionOperands: Set<String>
+            switch commandName {
+            case "python3": optionOperands = ["-W", "-X"]
+            case "node": optionOperands = ["-r", "--require", "--loader", "--import", "--conditions"]
+            default: optionOperands = ["-I", "-r", "-C", "-E"]
+            }
+            var scriptIndex: Int?
+            var index = 0
+            while index < arguments.count {
+                let argument = arguments[index]
+                if ["-c", "-e", "--eval", "-m"].contains(argument) { break }
+                if optionOperands.contains(argument) {
+                    index += 2
+                    continue
+                }
+                if argument == "--", index + 1 < arguments.count {
+                    scriptIndex = index + 1
+                    break
+                }
+                if !argument.hasPrefix("-") {
+                    scriptIndex = index
+                    break
+                }
+                index += 1
+            }
+            pathIndexes = scriptIndex.map { [$0] } ?? []
+        case "swift":
+            pathIndexes = Set(arguments.indices.filter { arguments[$0].hasSuffix(".swift") })
+        case "go":
+            var indexes: Set<Int> = []
+            var fileMode = false
+            if arguments.first == "run" {
+                for index in arguments.indices.dropFirst() {
+                    let argument = arguments[index]
+                    if argument == "--" { break }
+                    if argument.hasPrefix("-") { continue }
+                    if indexes.isEmpty {
+                        indexes.insert(index)
+                        fileMode = argument.hasSuffix(".go")
+                        if !fileMode { break }
+                    } else if fileMode, argument.hasSuffix(".go") {
+                        indexes.insert(index)
+                    } else {
+                        break
+                    }
+                }
+            }
+            pathIndexes = indexes
+        default:
+            pathIndexes = []
+        }
+        return arguments.enumerated().map { index, argument in
+            if pathIndexes.contains(index), argument.hasPrefix("~/") {
+                return homePath + argument.dropFirst(1)
+            }
+            if ["clang", "cc", "gcc"].contains(commandName) {
+                let joinedPathPrefixes = ["-iframework", "-isystem", "-iquote", "-I", "-F", "-o"]
+                if let prefix = joinedPathPrefixes.first(where: {
+                    argument.hasPrefix($0 + "~/")
+                }) {
+                    let operand = argument.dropFirst(prefix.count)
+                    return prefix + homePath + operand.dropFirst(1)
+                }
+            }
+            return argument
+        }
+    }
+
+    /// The path a tool result reports back to the model and the transcript.
+    /// The user asked for `~/Documents/x`; echoing the resolved absolute path
+    /// makes small models conclude the file "went somewhere else".
+    static func displayPath(
+        _ url: URL,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String {
+        let path = canonicalPath(url.standardizedFileURL.path)
+        let homePath = canonicalPath(home.standardizedFileURL.path)
+        if path == homePath { return "~" }
+        if path.hasPrefix(homePath + "/") { return "~" + path.dropFirst(homePath.count) }
+        return path
+    }
+
+    /// The kernel path of `path`, via POSIX `realpath`. Foundation's
+    /// `resolvingSymlinksInPath()` drops the `/private` prefix
+    /// (`/private/tmp/x` becomes `/tmp/x`), but sandbox profile filters match
+    /// the kernel path, so a home or workspace under `/private/tmp` or
+    /// `/private/var` would otherwise be denied every read and write.
+    static func canonicalPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     static func validateCompilerArguments(_ arguments: [String]) throws {
         let exactDenied = Set([
             "-Xclang", "-cc1", "-cc1as", "-cc1gen-reproducer",
@@ -1706,11 +1928,13 @@ enum LocalWorkspaceTools {
             "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
+        let workingDirectoryPath = canonicalPath(workingDirectory.path)
+        let temporaryDirectoryPath = canonicalPath(temporaryDirectory.path)
         var readableFilters = [
             "(literal \"/\")",
-            "(subpath \(quoted(workingDirectory.path)))",
-            "(subpath \(quoted(temporaryDirectory.path)))",
-            "(literal \(quoted(executable.path)))",
+            "(subpath \(quoted(workingDirectoryPath)))",
+            "(subpath \(quoted(temporaryDirectoryPath)))",
+            "(literal \(quoted(canonicalPath(executable.path))))",
             "(subpath \"/System\")",
             "(subpath \"/usr/lib\")",
             "(subpath \"/usr/share\")",
@@ -1761,7 +1985,7 @@ enum LocalWorkspaceTools {
             metadataFilters.append("(literal \"/usr/local\")")
         }
 
-        var executableFilters = ["(literal \(quoted(executable.path)))"]
+        var executableFilters = ["(literal \(quoted(canonicalPath(executable.path))))"]
         if approvedCommand == "python3" {
             executableFilters += [
                 "(literal \"/opt/homebrew/bin/python3\")",
@@ -1820,8 +2044,8 @@ enum LocalWorkspaceTools {
         \(metadataRule)
         (deny file-write*)
         (allow file-write*
-            (subpath \(quoted(workingDirectory.path)))
-            (subpath \(quoted(temporaryDirectory.path))))
+            (subpath \(quoted(workingDirectoryPath)))
+            (subpath \(quoted(temporaryDirectoryPath))))
         ; Interpreters may execute themselves recursively. Compilers receive
         ; only their explicit platform toolchain helpers.
         (deny process-exec

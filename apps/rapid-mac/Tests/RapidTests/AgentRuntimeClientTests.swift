@@ -25,6 +25,7 @@ struct AgentRuntimeClientTests {
             toolNames: ["files__read_file"],
             trustedInstructions: "Always answer concisely",
             localContext: "Preference: concise",
+            recentUserMessages: ["Search my Documents folder"],
             execution: .client,
             bearerToken: "secret"
         )
@@ -41,6 +42,25 @@ struct AgentRuntimeClientTests {
         #expect(body["tool_names"] as? [String] == ["files__read_file"])
         #expect(body["trusted_instructions"] as? String == "Always answer concisely")
         #expect(body["local_context"] as? String == "Preference: concise")
+        #expect(body["recent_user_messages"] as? [String] == ["Search my Documents folder"])
+    }
+
+    @Test("Create retries without structured history on an older server")
+    func createLegacyRecentUserMessagesRetry() async throws {
+        let client = makeClient()
+        AgentRuntimeStubProtocol.responses = [
+            (422, Data(#"{"detail":"unknown field: recent_user_messages"}"#.utf8)),
+            (200, Self.awaitingModel),
+        ]
+
+        _ = try await client.create(
+            goal: "Search again",
+            recentUserMessages: ["Search my Documents folder"],
+            execution: .client
+        )
+
+        #expect(try Self.jsonBody(at: 0)["recent_user_messages"] != nil)
+        #expect(try Self.jsonBody(at: 1)["recent_user_messages"] == nil)
     }
 
     @Test("Create can keep MCP execution pinned to the server run")
@@ -133,6 +153,101 @@ struct AgentRuntimeClientTests {
         #expect(body["content"] as? String == "not dispatched")
         #expect(body["is_error"] as? Bool == true)
         #expect(body["executed"] as? Bool == false)
+        #expect(body["declined"] == nil)
+
+        _ = try await client.submitToolResult(
+            runID: "01234567-89ab-cdef-0123-456789abcdef",
+            callID: "call-2",
+            content: "declined",
+            isError: true,
+            executed: false,
+            declined: true,
+            bearerToken: nil
+        )
+        let declinedBody = try Self.jsonBody(at: 1)
+        #expect(declinedBody["declined"] as? Bool == true)
+    }
+
+    @Test("Declined result retries without the new field on an older server")
+    func declinedResultLegacyRetry() async throws {
+        let client = makeClient()
+        AgentRuntimeStubProtocol.responses = [
+            (422, Data(#"{"detail":"unknown field: declined"}"#.utf8)),
+            (200, Self.awaitingModel),
+        ]
+
+        _ = try await client.submitToolResult(
+            runID: "01234567-89ab-cdef-0123-456789abcdef",
+            callID: "call-1",
+            content: "The user declined this action.",
+            isError: true,
+            executed: false,
+            declined: true,
+            bearerToken: nil
+        )
+
+        #expect(try Self.jsonBody(at: 0)["declined"] as? Bool == true)
+        #expect(try Self.jsonBody(at: 1)["declined"] == nil)
+    }
+
+    @Test("Declined result does not retry unrelated validation failures")
+    func declinedResultDoesNotRetryUnrelated422() async {
+        let client = makeClient()
+        AgentRuntimeStubProtocol.response = (
+            422,
+            Data(#"{"detail":"a declined client tool cannot be executed"}"#.utf8)
+        )
+
+        do {
+            _ = try await client.submitToolResult(
+                runID: "01234567-89ab-cdef-0123-456789abcdef",
+                callID: "call-1",
+                content: "The user declined this action.",
+                isError: true,
+                executed: true,
+                declined: true,
+                bearerToken: nil
+            )
+            Issue.record("Expected the contradictory result to be rejected")
+        } catch let error as AgentRuntimeClientError {
+            #expect(error == .http(
+                status: 422,
+                message: "a declined client tool cannot be executed"
+            ))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(AgentRuntimeStubProtocol.requests.count == 1)
+    }
+
+    @Test("Declined result retries only an unknown-field response")
+    func declinedResultDoesNotRetryGeneric422() async {
+        let client = makeClient()
+        AgentRuntimeStubProtocol.response = (
+            422,
+            Data(#"{"detail":"tool result does not match the pending action"}"#.utf8)
+        )
+
+        do {
+            _ = try await client.submitToolResult(
+                runID: "01234567-89ab-cdef-0123-456789abcdef",
+                callID: "call-1",
+                content: "The user declined this action.",
+                isError: true,
+                executed: false,
+                declined: true,
+                bearerToken: nil
+            )
+            Issue.record("Expected the mismatched result to be rejected")
+        } catch let error as AgentRuntimeClientError {
+            #expect(error == .http(
+                status: 422,
+                message: "tool result does not match the pending action"
+            ))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(AgentRuntimeStubProtocol.requests.count == 1)
     }
 
     @Test("Event cursors are monotonic client inputs")

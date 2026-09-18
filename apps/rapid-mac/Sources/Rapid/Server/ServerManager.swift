@@ -697,6 +697,10 @@ final class ServerManager {
     /// where an auto-start or model selection could otherwise race a second
     /// model into memory.
     private var communityBenchmarkReservations: Set<UUID> = []
+    /// Alias displaced by the first reservation in a serialized benchmark
+    /// ownership chain. Captured on MainActor at the reservation boundary.
+    private var communityBenchmarkDisplacedAlias: String?
+    private var communityBenchmarkRestorationInFlight = false
     private var communityBenchmarkWaiters: [
         (
             id: UUID,
@@ -3262,7 +3266,7 @@ final class ServerManager {
         // its cancelled subprocess. Serialize benchmark ownership so two
         // heavyweight local runners never overlap in unified memory.
         let reservation = UUID()
-        if communityBenchmarkReserved {
+        if communityBenchmarkReserved || communityBenchmarkRestorationInFlight {
             let waiterID = UUID()
             _ = try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation {
@@ -3286,6 +3290,15 @@ final class ServerManager {
             }
         } else {
             communityBenchmarkReservations.insert(reservation)
+            switch state {
+            case .ready(let alias), .starting(let alias):
+                communityBenchmarkDisplacedAlias = alias
+            case .crashed, .stopped, .idle, .missing:
+                // A failed post-benchmark restore retains its alias so the next
+                // serialized release gets a real retry path. Do not erase it
+                // merely because the failed start left the server stopped.
+                break
+            }
         }
         try throwIfCommunityBenchmarkCancelled(reservation)
         cancelAutoRespawn()
@@ -3326,14 +3339,59 @@ final class ServerManager {
     }
 
     /// Release the lifecycle reservation after the benchmark subprocess has
-    /// exited. The prior model is intentionally not auto-restored in the
-    /// internal beta; the user can start it again explicitly.
-    func finishCommunityBenchmark(_ reservation: UUID) {
-        guard communityBenchmarkReservations.remove(reservation) != nil else { return }
+    /// exited. The manager returns the alias atomically captured by the first
+    /// reservation only when the final serialized reservation is released;
+    /// ContentView then restores it through the ordinary Start path because
+    /// only the UI owns the catalog hint and readiness behavior.
+    @discardableResult
+    func finishCommunityBenchmark(_ reservation: UUID) -> String? {
+        guard communityBenchmarkReservations.remove(reservation) != nil else { return nil }
         if !communityBenchmarkReserved, !communityBenchmarkWaiters.isEmpty {
             let next = communityBenchmarkWaiters.removeFirst()
             communityBenchmarkReservations.insert(next.reservation)
             next.continuation.resume(returning: next.reservation)
+        }
+        guard !communityBenchmarkReserved else { return nil }
+        defer { communityBenchmarkDisplacedAlias = nil }
+        return communityBenchmarkDisplacedAlias
+    }
+
+    /// Release the final benchmark owner only after its displaced model has
+    /// finished restoring. New benchmark owners queue behind that restoration,
+    /// so they cannot race another heavyweight process into unified memory.
+    func finishCommunityBenchmark(
+        _ reservation: UUID,
+        restoringWith restore: @escaping @MainActor (String) async -> Bool
+    ) {
+        guard communityBenchmarkReservations.remove(reservation) != nil else { return }
+        guard !communityBenchmarkReserved else { return }
+        if !communityBenchmarkWaiters.isEmpty {
+            let next = communityBenchmarkWaiters.removeFirst()
+            communityBenchmarkReservations.insert(next.reservation)
+            next.continuation.resume(returning: next.reservation)
+            return
+        }
+        let alias = communityBenchmarkDisplacedAlias
+        communityBenchmarkDisplacedAlias = nil
+        guard let alias else { return }
+        communityBenchmarkRestorationInFlight = true
+        Task { @MainActor [weak self] in
+            let restored = await restore(alias)
+            guard let self else { return }
+            self.communityBenchmarkRestorationInFlight = false
+            if !restored || !self.communityBenchmarkWaiters.isEmpty {
+                // The resumed owner will stop the model we just restored.
+                // Preserve that identity across the serialized ownership
+                // chain so the final owner restores it again on release. A
+                // failed restore is retained even without a waiter, giving a
+                // later benchmark release a bounded recovery opportunity.
+                self.communityBenchmarkDisplacedAlias = alias
+            }
+            if !self.communityBenchmarkWaiters.isEmpty {
+                let next = self.communityBenchmarkWaiters.removeFirst()
+                self.communityBenchmarkReservations.insert(next.reservation)
+                next.continuation.resume(returning: next.reservation)
+            }
         }
     }
 

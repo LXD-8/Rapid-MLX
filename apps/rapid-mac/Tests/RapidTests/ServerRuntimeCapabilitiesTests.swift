@@ -287,6 +287,77 @@ struct ServerRuntimeCapabilitiesTests {
         manager.finishCommunityBenchmark(replacement)
     }
 
+    @Test("Community Benchmark returns the atomically displaced alias on final release")
+    @MainActor
+    func benchmarkFinalReleaseReturnsDisplacedAlias() async throws {
+        let manager = ServerManager(testingState: .ready(alias: "qwen3.5-4b"))
+        let reservation = try await manager.prepareForCommunityBenchmark()
+        #expect(manager.finishCommunityBenchmark(reservation) == "qwen3.5-4b")
+        #expect(manager.finishCommunityBenchmark(reservation) == nil)
+
+        let idle = ServerManager(testingState: .idle)
+        let idleReservation = try await idle.prepareForCommunityBenchmark()
+        #expect(idle.finishCommunityBenchmark(idleReservation) == nil)
+    }
+
+    @Test("Community Benchmark keeps lifecycle reserved while restoring the displaced model")
+    @MainActor
+    func benchmarkRestorationBlocksNextOwner() async throws {
+        let manager = ServerManager(testingState: .ready(alias: "qwen3.5-4b"))
+        let firstReservation = try await manager.prepareForCommunityBenchmark()
+        let restoreGate = RuntimeProbeGate()
+
+        manager.finishCommunityBenchmark(
+            firstReservation,
+            restoringWith: { alias in
+                #expect(alias == "qwen3.5-4b")
+                await restoreGate.wait()
+                return true
+            }
+        )
+        await restoreGate.waitUntilEntered()
+
+        var replacementAcquired = false
+        let replacement = Task { @MainActor in
+            let reservation = try await manager.prepareForCommunityBenchmark()
+            replacementAcquired = true
+            return reservation
+        }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!replacementAcquired)
+
+        await restoreGate.release()
+        let replacementReservation = try await replacement.value
+        #expect(replacementAcquired)
+        #expect(
+            manager.finishCommunityBenchmark(replacementReservation) == "qwen3.5-4b"
+        )
+    }
+
+    @Test("Community Benchmark retains a displaced alias after restoration fails")
+    @MainActor
+    func benchmarkFailedRestorationCanRetryOnNextRelease() async throws {
+        let manager = ServerManager(testingState: .ready(alias: "qwen3.5-4b"))
+        let firstReservation = try await manager.prepareForCommunityBenchmark()
+        var attempted = false
+
+        manager.finishCommunityBenchmark(
+            firstReservation,
+            restoringWith: { alias in
+                #expect(alias == "qwen3.5-4b")
+                attempted = true
+                return false
+            }
+        )
+        while !attempted { await Task.yield() }
+        for _ in 0..<10 { await Task.yield() }
+
+        let retryReservation = try await manager.prepareForCommunityBenchmark()
+        #expect(
+            manager.finishCommunityBenchmark(retryReservation) == "qwen3.5-4b"
+        )
+    }
+
     @Test("Deferred reap quarantine blocks the next benchmark owner")
     @MainActor
     func benchmarkDeferredReapTransfersReservation() async throws {

@@ -5,6 +5,17 @@ struct AgentClientToolResult: Equatable, Sendable {
     let content: String
     let isError: Bool
     let executed: Bool
+    /// True when the person pressed Don't allow in the approval sheet. The
+    /// server drops client content for a tool that never ran, so this flag is
+    /// how the model learns the step was refused rather than broken.
+    let declined: Bool
+
+    init(content: String, isError: Bool, executed: Bool, declined: Bool = false) {
+        self.content = content
+        self.isError = isError
+        self.executed = executed
+        self.declined = declined
+    }
 }
 
 /// Exact UI context that owns a Personal Intelligence run.
@@ -149,6 +160,7 @@ final class AgentSessionController {
         toolNames: [String]? = nil,
         trustedInstructions: String? = nil,
         localContext: String? = nil,
+        recentUserMessages: [String]? = nil,
         clientToolExecutor: ClientToolExecutor? = nil,
         baseURL: URL,
         bearerToken: String?
@@ -186,6 +198,7 @@ final class AgentSessionController {
                         toolNames: toolNames,
                         trustedInstructions: trustedInstructions,
                         localContext: localContext,
+                        recentUserMessages: recentUserMessages,
                         execution: clientToolExecutor == nil ? .server : .client,
                         bearerToken: bearerToken
                     )
@@ -448,6 +461,7 @@ final class AgentSessionController {
                         content: result.content,
                         isError: result.isError,
                         executed: result.executed,
+                        declined: result.declined,
                         bearerToken: bearerToken
                     )
                 } catch is CancellationError {

@@ -8,6 +8,7 @@ protocol AgentRuntimeTransport: Sendable {
         toolNames: [String]?,
         trustedInstructions: String?,
         localContext: String?,
+        recentUserMessages: [String]?,
         execution: AgentExecutionMode,
         bearerToken: String?
     ) async throws -> AgentRunView
@@ -26,6 +27,7 @@ protocol AgentRuntimeTransport: Sendable {
         content: String,
         isError: Bool,
         executed: Bool,
+        declined: Bool,
         bearerToken: String?
     ) async throws -> AgentRunView
     func cancel(runID: String, bearerToken: String?) async throws -> AgentRunView
@@ -285,6 +287,7 @@ final class AgentRuntimeClient: Sendable {
         let toolNames: [String]?
         let trustedInstructions: String?
         let localContext: String?
+        let recentUserMessages: [String]?
         let execution: AgentExecutionMode
 
         enum CodingKeys: String, CodingKey {
@@ -292,6 +295,7 @@ final class AgentRuntimeClient: Sendable {
             case toolNames = "tool_names"
             case trustedInstructions = "trusted_instructions"
             case localContext = "local_context"
+            case recentUserMessages = "recent_user_messages"
             case execution
         }
     }
@@ -311,12 +315,27 @@ final class AgentRuntimeClient: Sendable {
         let content: String
         let isError: Bool
         let executed: Bool
+        let declined: Bool
 
         enum CodingKeys: String, CodingKey {
             case callID = "call_id"
             case content
             case isError = "is_error"
             case executed
+            case declined
+        }
+
+        func encode(to encoder: any Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(callID, forKey: .callID)
+            try container.encode(content, forKey: .content)
+            try container.encode(isError, forKey: .isError)
+            try container.encode(executed, forKey: .executed)
+            // Older servers reject unknown fields. Preserve their common path
+            // while sending the new semantic marker only when it is needed.
+            if declined {
+                try container.encode(true, forKey: .declined)
+            }
         }
     }
 
@@ -344,22 +363,45 @@ final class AgentRuntimeClient: Sendable {
         toolNames: [String]? = nil,
         trustedInstructions: String? = nil,
         localContext: String? = nil,
+        recentUserMessages: [String]? = nil,
         execution: AgentExecutionMode,
         bearerToken: String? = nil
     ) async throws -> AgentRunView {
-        try await send(
-            method: "POST",
-            path: "v1/agent/runs",
-            bearerToken: bearerToken,
-            body: CreateRequest(
+        let path = "v1/agent/runs"
+        let request = CreateRequest(
+            goal: goal,
+            model: model,
+            toolNames: toolNames,
+            trustedInstructions: trustedInstructions,
+            localContext: localContext,
+            recentUserMessages: recentUserMessages?.isEmpty == true ? nil : recentUserMessages,
+            execution: execution
+        )
+        do {
+            return try await send(
+                method: "POST",
+                path: path,
+                bearerToken: bearerToken,
+                body: request
+            )
+        } catch AgentRuntimeClientError.http(let status, let message)
+            where request.recentUserMessages != nil && status == 422
+            && Self.serverRejectedUnknownField(message, field: "recent_user_messages") {
+            return try await send(
+                method: "POST",
+                path: path,
+                bearerToken: bearerToken,
+                body: CreateRequest(
                 goal: goal,
                 model: model,
                 toolNames: toolNames,
                 trustedInstructions: trustedInstructions,
                 localContext: localContext,
+                recentUserMessages: nil,
                 execution: execution
+                )
             )
-        )
+        }
     }
 
     func get(runID: String, bearerToken: String? = nil) async throws -> AgentRunView {
@@ -403,19 +445,51 @@ final class AgentRuntimeClient: Sendable {
         content: String,
         isError: Bool,
         executed: Bool,
+        declined: Bool = false,
         bearerToken: String? = nil
     ) async throws -> AgentRunView {
-        try await send(
-            method: "POST",
-            path: "v1/agent/runs/\(try encodedPathComponent(runID))/tool-result",
-            bearerToken: bearerToken,
-            body: ToolResultRequest(
-                callID: callID,
-                content: content,
-                isError: isError,
-                executed: executed
+        let path = "v1/agent/runs/\(try encodedPathComponent(runID))/tool-result"
+        do {
+            return try await send(
+                method: "POST",
+                path: path,
+                bearerToken: bearerToken,
+                body: ToolResultRequest(
+                    callID: callID,
+                    content: content,
+                    isError: isError,
+                    executed: executed,
+                    declined: declined
+                )
             )
-        )
+        } catch AgentRuntimeClientError.http(let status, let message)
+            where declined && !executed && status == 422
+            && Self.serverRejectedUnknownField(message, field: "declined") {
+            // Servers predating the structured decline field reject unknown
+            // keys. Retry the same non-executed result without that marker;
+            // its content retains the legacy explanation.
+            return try await send(
+                method: "POST",
+                path: path,
+                bearerToken: bearerToken,
+                body: ToolResultRequest(
+                    callID: callID,
+                    content: content,
+                    isError: isError,
+                    executed: executed,
+                    declined: false
+                )
+            )
+        }
+    }
+
+    private static func serverRejectedUnknownField(
+        _ message: String,
+        field: String
+    ) -> Bool {
+        let normalized = message.lowercased()
+        return normalized.contains(field.lowercased())
+            && (normalized.contains("unknown") || normalized.contains("extra"))
     }
 
     func cancel(runID: String, bearerToken: String? = nil) async throws -> AgentRunView {

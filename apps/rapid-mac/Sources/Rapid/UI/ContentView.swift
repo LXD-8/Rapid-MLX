@@ -1246,8 +1246,32 @@ struct ContentView: View {
                 CommunityBenchmarkView(
                     catalog: catalogEntries,
                     binary: server.binaryPath,
-                    prepareServer: { try await server.prepareForCommunityBenchmark() },
-                    releaseServer: { server.finishCommunityBenchmark($0) },
+                    prepareServer: {
+                        try await server.prepareForCommunityBenchmark()
+                    },
+                    releaseServer: { reservation in
+                        server.finishCommunityBenchmark(
+                            reservation,
+                            restoringWith: { restoredAlias in
+                                let entry = catalogEntries.first {
+                                    $0.alias == restoredAlias
+                                }
+                                let hint = entry.map {
+                                    ServerManager.CatalogEntryHint(
+                                        entry: $0,
+                                        generation: catalogGeneration
+                                    )
+                                }
+                                return await server.ensureServing(
+                                    alias: restoredAlias,
+                                    hfPath: entry?.hfRepo,
+                                    estimatedMemoryGB: nil,
+                                    replacementGroup: .assistant,
+                                    catalogEntryHint: hint
+                                )
+                            }
+                        )
+                    },
                     retainServerDuringDeferredReap: {
                         server.retainCommunityBenchmarkDuringDeferredReap($0)
                     },
